@@ -17,6 +17,19 @@ func Hash(value string) (string, error) {
 	if err := ValidatePassword(value); err != nil {
 		return "", err
 	}
+	return generateHash(value)
+}
+
+// HashLegacy is only for converting an existing plaintext credential to
+// bcrypt during upgrades. New and changed passwords must continue to use Hash.
+func HashLegacy(value string) (string, error) {
+	if len([]byte(value)) > 72 {
+		return "", errors.New("旧密码的 UTF-8 编码超过 72 字节")
+	}
+	return generateHash(value)
+}
+
+func generateHash(value string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(value), bcryptCost)
 	return string(hash), err
 }

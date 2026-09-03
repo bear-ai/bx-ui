@@ -24,3 +24,17 @@ func TestPasswordPolicy(t *testing.T) {
 		t.Fatal("short username was accepted")
 	}
 }
+
+func TestHashLegacyPreservesShortExistingPassword(t *testing.T) {
+	plain := "short-old"
+	hash, err := HashLegacy(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Compare(hash, plain) {
+		t.Fatal("legacy password was not preserved during hashing")
+	}
+	if _, err := Hash(plain); err == nil {
+		t.Fatal("new password policy accepted a short password")
+	}
+}

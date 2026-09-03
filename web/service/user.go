@@ -91,9 +91,9 @@ func (s *UserService) MigratePasswordHashes() error {
 	for _, user := range users {
 		changed := false
 		if !password.IsHash(user.PasswordHash) {
-			hash, err := password.Hash(user.PasswordHash)
+			hash, err := password.HashLegacy(user.PasswordHash)
 			if err != nil {
-				return errors.New("旧账号密码不符合新的安全要求，请先通过命令行重置密码")
+				return errors.New("旧账号密码无法安全迁移，请先通过命令行重置密码")
 			}
 			user.PasswordHash = hash
 			changed = true

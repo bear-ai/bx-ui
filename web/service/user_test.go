@@ -17,7 +17,7 @@ func TestLegacyPasswordMigrationAndRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = legacyDB.Exec(`CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, password TEXT);
-		INSERT INTO users(username, password) VALUES ('legacy-admin', 'legacy-password-123');`)
+		INSERT INTO users(username, password) VALUES ('legacy-admin', 'short-old');`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestLegacyPasswordMigrationAndRevocation(t *testing.T) {
 	if err := users.MigratePasswordHashes(); err != nil {
 		t.Fatal(err)
 	}
-	user := users.CheckUser("legacy-admin", "legacy-password-123")
+	user := users.CheckUser("legacy-admin", "short-old")
 	if user == nil || !password.IsHash(user.PasswordHash) {
 		t.Fatal("legacy password was not upgraded")
 	}
@@ -44,7 +44,7 @@ func TestLegacyPasswordMigrationAndRevocation(t *testing.T) {
 	if updated.SessionVersion <= oldVersion {
 		t.Fatal("password change did not revoke prior sessions")
 	}
-	if users.CheckUser("legacy-admin", "legacy-password-123") != nil {
+	if users.CheckUser("legacy-admin", "short-old") != nil {
 		t.Fatal("old password remains valid")
 	}
 	if users.CheckUser("legacy-admin", "replacement-password-456") == nil {
