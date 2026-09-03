@@ -1,0 +1,123 @@
+{{define "inboundModal"}}
+<a-modal id="inbound-modal" v-model="inModal.visible" :title="inModal.title" @ok="inModal.ok"
+         :confirm-loading="inModal.confirmLoading" :closable="true" :mask-closable="false"
+         :ok-text="inModal.okText" cancel-text='{{ i18n "close" }}'>
+    {{template "form/inbound"}}
+</a-modal>
+<script>
+
+    const inModal = {
+        title: '',
+        visible: false,
+        confirmLoading: false,
+        okText: '确定',
+        confirm: null,
+        inbound: new Inbound(),
+        dbInbound: new DBInbound(),
+        ok() {
+            ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
+        },
+        show({ title='', okText='确定', inbound=null, dbInbound=null, confirm=(inbound, dbInbound)=>{} }) {
+            this.title = title;
+            this.okText = okText;
+            if (inbound) {
+                this.inbound = Inbound.fromJson(inbound.toJson());
+            } else {
+                this.inbound = new Inbound();
+            }
+            if (dbInbound) {
+                this.dbInbound = new DBInbound(dbInbound);
+            } else {
+                this.dbInbound = new DBInbound();
+            }
+            this.confirm = confirm;
+            this.visible = true;
+        },
+        close() {
+            inModal.visible = false;
+            inModal.loading(false);
+        },
+        loading(loading) {
+            inModal.confirmLoading = loading;
+        },
+    };
+
+    const protocols = {
+        VMESS: Protocols.VMESS,
+        VLESS: Protocols.VLESS,
+        TROJAN: Protocols.TROJAN,
+        SHADOWSOCKS: Protocols.SHADOWSOCKS,
+        DOKODEMO: Protocols.DOKODEMO,
+        TUNNEL: Protocols.TUNNEL,
+        SOCKS: Protocols.SOCKS,
+        MIXED: Protocols.MIXED,
+        HTTP: Protocols.HTTP,
+        WIREGUARD: Protocols.WIREGUARD,
+        HYSTERIA: Protocols.HYSTERIA,
+        TUN: Protocols.TUN,
+    };
+
+    new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#inbound-modal',
+        data: {
+            inModal: inModal,
+            Protocols: protocols,
+            SSMethods: SSMethods,
+            VmessMethods: VmessMethods,
+            FLOW_CONTROL: FLOW_CONTROL,
+            vlessAuthKind: 'x25519',
+            get inbound() {
+                return inModal.inbound;
+            },
+            get dbInbound() {
+                return inModal.dbInbound;
+            }
+        },
+        methods: {
+            regenerateShadowsocksPassword() {
+                this.inbound.settings.password = RandomUtil.randomShadowsocksPassword(this.inbound.settings.method);
+            },
+            shadowsocksMethodChange() {
+                this.regenerateShadowsocksPassword();
+            },
+            async generateVlessEncryption(kind) {
+                const msg = await HttpUtil.post('/xui/inbound/generateVlessEnc');
+                if (!msg.success) {
+                    return;
+                }
+                const auth = msg.obj.find(item => item.id === kind);
+                if (auth) {
+                    this.inbound.settings.decryption = auth.decryption;
+                    this.inbound.settings.encryption = auth.encryption;
+                }
+            },
+            clearVlessEncryption() {
+                this.inbound.settings.decryption = 'none';
+                this.inbound.settings.encryption = 'none';
+            },
+            async generateRealityKey() {
+                const msg = await HttpUtil.post('/xui/inbound/generateX25519');
+                if (msg.success) {
+                    this.inbound.stream.reality.privateKey = msg.obj.privateKey;
+                    this.inbound.stream.reality.publicKey = msg.obj.publicKey;
+                }
+            },
+            async generateWireGuardKey() {
+                const msg = await HttpUtil.post('/xui/inbound/generateX25519');
+                if (msg.success) {
+                    this.inbound.settings.secretKey = msg.obj.privateKey;
+                }
+            },
+            streamNetworkChange(network) {
+                if (network === 'kcp') {
+                    this.inModal.inbound.stream.security = 'none';
+                } else if (this.inModal.inbound.reality && !this.inModal.inbound.canEnableReality()) {
+                    this.inModal.inbound.stream.security = 'none';
+                }
+            }
+        }
+    });
+
+</script>
+{{end}}

@@ -1,0 +1,22 @@
+{{define "form/streamXHTTP"}}
+<a-form layout="inline">
+    <a-form-item label="Host"><a-input v-model.trim="inbound.stream.xhttp.host"></a-input></a-form-item>
+    <a-form-item label="路径"><a-input v-model.trim="inbound.stream.xhttp.path"></a-input></a-form-item>
+    <a-form-item label="模式">
+        <a-select v-model="inbound.stream.xhttp.mode" style="width: 145px">
+            <a-select-option value="auto">auto</a-select-option>
+            <a-select-option value="packet-up">packet-up</a-select-option>
+            <a-select-option value="stream-up">stream-up</a-select-option>
+            <a-select-option value="stream-one">stream-one</a-select-option>
+        </a-select>
+    </a-form-item>
+    <a-form-item label="请求头">
+        <a-button size="small" @click="inbound.stream.xhttp.addHeader()">+</a-button>
+        <a-input-group v-for="(header, index) in inbound.stream.xhttp.headers" :key="index" compact>
+            <a-input style="width: 45%" v-model.trim="header.name" placeholder="名称"></a-input>
+            <a-input style="width: 45%" v-model.trim="header.value" placeholder="值"></a-input>
+            <a-button style="width: 10%" @click="inbound.stream.xhttp.removeHeader(index)">-</a-button>
+        </a-input-group>
+    </a-form-item>
+</a-form>
+{{end}}

@@ -1,0 +1,41 @@
+{{define "form/hysteria"}}
+<a-form layout="inline">
+    <a-form-item label="版本">
+        <a-input-number :value="2" disabled></a-input-number>
+    </a-form-item>
+    <a-form-item label="客户端认证">
+        <a-input v-model.trim="inbound.settings.clients[0].auth"></a-input>
+    </a-form-item>
+    <a-form-item label="Email">
+        <a-input v-model.trim="inbound.settings.clients[0].email"></a-input>
+    </a-form-item>
+    <a-form-item label="UDP 空闲超时(秒)">
+        <a-input-number :min="2" :max="600" v-model="inbound.stream.hysteria.udpIdleTimeout"></a-input-number>
+    </a-form-item>
+    <a-form-item label="传输认证(可选)">
+        <a-input v-model.trim="inbound.stream.hysteria.auth"></a-input>
+    </a-form-item>
+    <a-form-item label="伪装类型">
+        <a-select v-model="inbound.stream.hysteria.masquerade.type" style="width: 160px">
+            <a-select-option value="">默认 404</a-select-option>
+            <a-select-option value="proxy">反向代理</a-select-option>
+            <a-select-option value="file">静态目录</a-select-option>
+            <a-select-option value="string">固定内容</a-select-option>
+        </a-select>
+    </a-form-item>
+    <a-form-item v-if="inbound.stream.hysteria.masquerade.type === 'proxy'" label="上游 URL">
+        <a-input v-model.trim="inbound.stream.hysteria.masquerade.url" placeholder="https://example.com"></a-input>
+    </a-form-item>
+    <a-form-item v-if="inbound.stream.hysteria.masquerade.type === 'file'" label="静态目录">
+        <a-input v-model.trim="inbound.stream.hysteria.masquerade.dir"></a-input>
+    </a-form-item>
+    <template v-if="inbound.stream.hysteria.masquerade.type === 'string'">
+        <a-form-item label="状态码">
+            <a-input-number :min="0" :max="599" v-model="inbound.stream.hysteria.masquerade.statusCode"></a-input-number>
+        </a-form-item>
+        <a-form-item label="响应内容">
+            <a-textarea v-model="inbound.stream.hysteria.masquerade.content" :rows="3"></a-textarea>
+        </a-form-item>
+    </template>
+</a-form>
+{{end}}

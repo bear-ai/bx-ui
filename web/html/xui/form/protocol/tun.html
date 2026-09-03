@@ -1,0 +1,15 @@
+{{define "form/tun"}}
+<a-form layout="inline">
+    <a-alert message="TUN 入站直接创建系统网络接口，端口字段会被 Xray 忽略；通常需要 root/CAP_NET_ADMIN。"
+             type="warning" show-icon style="margin-bottom: 12px"></a-alert>
+    <a-form-item label="接口名">
+        <a-input v-model.trim="inbound.settings.name" placeholder="xray0"></a-input>
+    </a-form-item>
+    <a-form-item label="MTU">
+        <a-input-number :min="576" v-model="inbound.settings.mtu"></a-input-number>
+    </a-form-item>
+    <a-form-item label="用户等级">
+        <a-input-number :min="0" v-model="inbound.settings.userLevel"></a-input-number>
+    </a-form-item>
+</a-form>
+{{end}}

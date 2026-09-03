@@ -1,0 +1,31 @@
+{{define "form/dokodemo"}}
+<a-form layout="inline">
+    <a-form-item label="目标地址">
+        <a-input v-model.trim="inbound.settings.address"></a-input>
+    </a-form-item>
+    <a-form-item label="目标端口">
+        <a-input type="number" v-model.number="inbound.settings.port"></a-input>
+    </a-form-item>
+    <a-form-item label="网络">
+        <a-select v-model="inbound.settings.network" style="width: 100px;">
+            <a-select-option value="tcp,udp">tcp+udp</a-select-option>
+            <a-select-option value="tcp">tcp</a-select-option>
+            <a-select-option value="udp">udp</a-select-option>
+        </a-select>
+    </a-form-item>
+    <a-form-item label="跟随透明代理重定向">
+        <a-switch v-model="inbound.settings.followRedirect"></a-switch>
+    </a-form-item>
+    <a-form-item label="用户等级">
+        <a-input-number :min="0" v-model="inbound.settings.userLevel"></a-input-number>
+    </a-form-item>
+    <a-form-item label="端口映射">
+        <a-button size="small" @click="inbound.settings.addPortMap()">+</a-button>
+        <a-input-group v-for="(item, index) in inbound.settings.portMaps" :key="index" compact>
+            <a-input style="width: 35%" v-model.trim="item.source" placeholder="源端口，如 80"></a-input>
+            <a-input style="width: 55%" v-model.trim="item.destination" placeholder="目标，如 127.0.0.1:8080"></a-input>
+            <a-button style="width: 10%" @click="inbound.settings.removePortMap(index)">-</a-button>
+        </a-input-group>
+    </a-form-item>
+</a-form>
+{{end}}

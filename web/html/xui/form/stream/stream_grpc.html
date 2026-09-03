@@ -1,0 +1,13 @@
+{{define "form/streamGRPC"}}
+<a-form layout="inline">
+    <a-form-item label="serviceName">
+        <a-input v-model.trim="inbound.stream.grpc.serviceName"></a-input>
+    </a-form-item>
+    <a-form-item label="authority">
+        <a-input v-model.trim="inbound.stream.grpc.authority"></a-input>
+    </a-form-item>
+    <a-form-item label="multi mode">
+        <a-switch v-model="inbound.stream.grpc.multiMode"></a-switch>
+    </a-form-item>
+</a-form>
+{{end}}

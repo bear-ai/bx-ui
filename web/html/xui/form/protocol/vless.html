@@ -1,0 +1,69 @@
+{{define "form/vless"}}
+<a-form layout="inline">
+    <a-form-item label="id">
+        <a-input v-model.trim="inbound.settings.vlesses[0].id"></a-input>
+    </a-form-item>
+    <a-form-item v-if="inbound.canEnableFlow()" label="flow">
+        <a-select v-model="inbound.settings.vlesses[0].flow" style="width: 150px">
+            <a-select-option value="">无</a-select-option>
+            <a-select-option v-for="key in FLOW_CONTROL" :value="key">[[ key ]]</a-select-option>
+        </a-select>
+    </a-form-item>
+    <a-form-item label="服务端解密参数">
+        <a-input v-model.trim="inbound.settings.decryption" style="width: 320px"></a-input>
+    </a-form-item>
+    <a-form-item label="客户端加密参数">
+        <a-input v-model.trim="inbound.settings.encryption" style="width: 320px"></a-input>
+    </a-form-item>
+    <a-form-item label="生成 VLESS Encryption">
+        <a-input-group compact>
+            <a-select v-model="vlessAuthKind" style="width: 245px">
+                <a-select-option value="x25519">X25519 / native</a-select-option>
+                <a-select-option value="x25519_xorpub">X25519 / xorpub</a-select-option>
+                <a-select-option value="x25519_random">X25519 / random</a-select-option>
+                <a-select-option value="mlkem768">ML-KEM-768 / native</a-select-option>
+                <a-select-option value="mlkem768_xorpub">ML-KEM-768 / xorpub</a-select-option>
+                <a-select-option value="mlkem768_random">ML-KEM-768 / random</a-select-option>
+            </a-select>
+            <a-button type="primary" @click="generateVlessEncryption(vlessAuthKind)">生成</a-button>
+            <a-button @click="clearVlessEncryption">清除</a-button>
+        </a-input-group>
+    </a-form-item>
+</a-form>
+
+<a-form v-if="inbound.settings.decryption === 'none'" layout="inline">
+    <a-form-item label="fallbacks">
+        <a-row>
+            <a-button type="primary" size="small"
+                      @click="inbound.settings.addFallback()">
+                +
+            </a-button>
+        </a-row>
+    </a-form-item>
+</a-form>
+
+<!-- vless fallbacks -->
+<a-form v-if="inbound.settings.decryption === 'none'" v-for="(fallback, index) in inbound.settings.fallbacks" layout="inline">
+    <a-divider>
+        fallback[[ index + 1 ]]
+        <a-icon type="delete" @click="() => inbound.settings.delFallback(index)"
+                style="color: rgb(255, 77, 79);cursor: pointer;"/>
+    </a-divider>
+    <a-form-item label="name">
+        <a-input v-model="fallback.name"></a-input>
+    </a-form-item>
+    <a-form-item label="alpn">
+        <a-input v-model="fallback.alpn"></a-input>
+    </a-form-item>
+    <a-form-item label="path">
+        <a-input v-model="fallback.path"></a-input>
+    </a-form-item>
+    <a-form-item label="dest">
+        <a-input v-model="fallback.dest"></a-input>
+    </a-form-item>
+    <a-form-item label="xver">
+        <a-input type="number" v-model.number="fallback.xver"></a-input>
+    </a-form-item>
+    <a-divider v-if="inbound.settings.fallbacks.length - 1 === index"/>
+</a-form>
+{{end}}

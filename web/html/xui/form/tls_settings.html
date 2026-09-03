@@ -1,0 +1,102 @@
+{{define "form/tlsSettings"}}
+<!-- tls enable -->
+<a-form layout="inline" v-if="inbound.canSetTls()">
+    <a-form-item label="tls">
+        <a-switch v-model="inbound.tls">
+        </a-switch>
+    </a-form-item>
+    <a-form-item v-if="inbound.canEnableReality()" label="REALITY">
+        <a-switch v-model="inbound.reality"></a-switch>
+    </a-form-item>
+</a-form>
+
+<!-- tls settings -->
+<a-form v-if="inbound.tls"
+        layout="inline">
+    <a-form-item label="域名">
+        <a-input v-model.trim="inbound.stream.tls.server"></a-input>
+    </a-form-item>
+    <a-form-item label="alpn">
+        <a-select mode="tags" v-model="inbound.stream.tls.alpn" style="min-width: 220px" placeholder="h2, http/1.1"></a-select>
+    </a-form-item>
+    <a-form-item label="证书">
+        <a-radio-group v-model="inbound.stream.tls.certs[0].useFile"
+                       button-style="solid">
+            <a-radio-button :value="true">certificate file path</a-radio-button>
+            <a-radio-button :value="false">certificate file content</a-radio-button>
+        </a-radio-group>
+    </a-form-item>
+    <template v-if="inbound.stream.tls.certs[0].useFile">
+        <a-form-item label="公钥文件路径">
+            <a-input v-model.trim="inbound.stream.tls.certs[0].certFile"></a-input>
+        </a-form-item>
+        <a-form-item label="密钥文件路径">
+            <a-input v-model.trim="inbound.stream.tls.certs[0].keyFile"></a-input>
+        </a-form-item>
+    </template>
+    <template v-else>
+        <a-form-item label="公钥内容">
+            <a-input type="textarea" :rows="2"
+                     v-model="inbound.stream.tls.certs[0].cert"></a-input>
+        </a-form-item>
+        <a-form-item label="密钥内容">
+            <a-input type="textarea" :rows="2"
+                     v-model="inbound.stream.tls.certs[0].key"></a-input>
+        </a-form-item>
+    </template>
+</a-form>
+<a-form v-else-if="inbound.reality" layout="inline">
+    <a-form-item label="目标地址">
+        <a-input v-model.trim="inbound.stream.reality.target" placeholder="www.microsoft.com:443"></a-input>
+    </a-form-item>
+    <a-form-item label="Server Names">
+        <a-select mode="tags" v-model="inbound.stream.reality.serverNames" style="min-width: 280px"></a-select>
+    </a-form-item>
+    <a-form-item label="私钥">
+        <a-input v-model.trim="inbound.stream.reality.privateKey" style="width: 350px">
+            <a-icon slot="addonAfter" type="reload" @click="generateRealityKey"></a-icon>
+        </a-input>
+    </a-form-item>
+    <a-form-item label="公钥（分享链接）">
+        <a-input v-model.trim="inbound.stream.reality.publicKey" style="width: 350px"></a-input>
+    </a-form-item>
+    <a-form-item label="Short IDs">
+        <a-select mode="tags" v-model="inbound.stream.reality.shortIds" style="min-width: 220px" placeholder="0-16 位偶数长度十六进制"></a-select>
+    </a-form-item>
+    <a-form-item label="指纹">
+        <a-select v-model="inbound.stream.reality.fingerprint" style="width: 130px">
+            <a-select-option value="chrome">chrome</a-select-option>
+            <a-select-option value="firefox">firefox</a-select-option>
+            <a-select-option value="safari">safari</a-select-option>
+            <a-select-option value="ios">ios</a-select-option>
+            <a-select-option value="android">android</a-select-option>
+            <a-select-option value="edge">edge</a-select-option>
+            <a-select-option value="random">random</a-select-option>
+            <a-select-option value="randomized">randomized</a-select-option>
+        </a-select>
+    </a-form-item>
+    <a-form-item label="客户端 SNI">
+        <a-input v-model.trim="inbound.stream.reality.serverName" placeholder="默认使用第一个 Server Name"></a-input>
+    </a-form-item>
+    <a-form-item label="Spider X">
+        <a-input v-model.trim="inbound.stream.reality.spiderX"></a-input>
+    </a-form-item>
+    <a-form-item label="PROXY protocol">
+        <a-input-number :min="0" :max="2" v-model="inbound.stream.reality.xver"></a-input-number>
+    </a-form-item>
+    <a-form-item label="最小客户端版本">
+        <a-input v-model.trim="inbound.stream.reality.minClientVer" placeholder="例如 1.8.0"></a-input>
+    </a-form-item>
+    <a-form-item label="最大客户端版本">
+        <a-input v-model.trim="inbound.stream.reality.maxClientVer" placeholder="例如 1.99.0"></a-input>
+    </a-form-item>
+    <a-form-item label="最大时间差(ms)">
+        <a-input-number :min="0" v-model="inbound.stream.reality.maxTimeDiff"></a-input-number>
+    </a-form-item>
+</a-form>
+<a-form layout="inline" v-else-if = "inbound.stream.network === 'tcp' ">
+    <a-form-item label="tcp-acceptProxyProtocol">
+        <a-switch v-model="inbound.stream.tcp.acceptProxyProtocol"></a-switch>
+    </a-form-item>
+</a-form>
+{{end}}

@@ -1,0 +1,64 @@
+{{define "form/wireguard"}}
+<a-form layout="inline">
+    <a-form-item label="服务端私钥">
+        <a-input v-model.trim="inbound.settings.secretKey" style="width: 330px">
+            <a-icon slot="addonAfter" type="reload" @click="generateWireGuardKey"></a-icon>
+        </a-input>
+    </a-form-item>
+    <a-form-item label="接口地址">
+        <a-button size="small" @click="inbound.settings.addAddress()">+</a-button>
+        <a-input-group v-for="(address, index) in inbound.settings.address" :key="index" compact>
+            <a-input style="width: 88%" v-model.trim="inbound.settings.address[index]" placeholder="10.0.0.1/32"></a-input>
+            <a-button style="width: 12%" @click="inbound.settings.removeAddress(index)">-</a-button>
+        </a-input-group>
+    </a-form-item>
+    <a-form-item label="MTU">
+        <a-input-number :min="576" v-model="inbound.settings.mtu"></a-input-number>
+    </a-form-item>
+    <a-form-item label="禁用内核 TUN">
+        <a-switch v-model="inbound.settings.noKernelTun"></a-switch>
+    </a-form-item>
+    <a-form-item label="域名策略">
+        <a-select v-model="inbound.settings.domainStrategy" style="width: 140px">
+            <a-select-option value="ForceIP">ForceIP</a-select-option>
+            <a-select-option value="ForceIPv4">ForceIPv4</a-select-option>
+            <a-select-option value="ForceIPv6">ForceIPv6</a-select-option>
+            <a-select-option value="ForceIPv4v6">ForceIPv4v6</a-select-option>
+            <a-select-option value="ForceIPv6v4">ForceIPv6v4</a-select-option>
+        </a-select>
+    </a-form-item>
+</a-form>
+
+<a-form layout="inline">
+    <a-form-item label="Peers">
+        <a-button type="primary" size="small" @click="inbound.settings.addPeer()">+</a-button>
+    </a-form-item>
+    <a-alert v-if="inbound.settings.peers.length === 0" message="至少添加一个 Peer 后客户端才能连接。" type="info" show-icon></a-alert>
+</a-form>
+<a-form v-for="(peer, index) in inbound.settings.peers" :key="index" layout="inline">
+    <a-divider>
+        Peer [[ index + 1 ]]
+        <a-icon type="delete" @click="inbound.settings.removePeer(index)"
+                style="color: rgb(255, 77, 79);cursor: pointer;"/>
+    </a-divider>
+    <a-form-item label="公钥">
+        <a-input v-model.trim="peer.publicKey" style="width: 330px"></a-input>
+    </a-form-item>
+    <a-form-item label="预共享密钥">
+        <a-input v-model.trim="peer.preSharedKey" style="width: 330px"></a-input>
+    </a-form-item>
+    <a-form-item label="Endpoint">
+        <a-input v-model.trim="peer.endpoint" placeholder="host:port"></a-input>
+    </a-form-item>
+    <a-form-item label="KeepAlive">
+        <a-input-number :min="0" v-model="peer.keepAlive"></a-input-number>
+    </a-form-item>
+    <a-form-item label="Allowed IPs">
+        <a-button size="small" @click="peer.addAllowedIP()">+</a-button>
+        <a-input-group v-for="(ip, ipIndex) in peer.allowedIPs" :key="ipIndex" compact>
+            <a-input style="width: 88%" v-model.trim="peer.allowedIPs[ipIndex]" placeholder="10.0.0.2/32"></a-input>
+            <a-button style="width: 12%" @click="peer.removeAllowedIP(ipIndex)">-</a-button>
+        </a-input-group>
+    </a-form-item>
+</a-form>
+{{end}}
