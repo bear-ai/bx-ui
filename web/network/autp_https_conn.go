@@ -3,9 +3,10 @@ package network
 import (
 	"bufio"
 	"bytes"
-	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -33,18 +34,21 @@ func (c *AutoHttpsConn) readRequest() bool {
 	}
 	reader := bytes.NewReader(c.firstBuf)
 	bufReader := bufio.NewReader(reader)
-	request, err := http.ReadRequest(bufReader)
+	_, err = http.ReadRequest(bufReader)
 	if err != nil {
 		return false
 	}
 	resp := http.Response{
 		Header: http.Header{},
 	}
-	resp.StatusCode = http.StatusTemporaryRedirect
-	location := fmt.Sprintf("https://%v%v", request.Host, request.RequestURI)
-	resp.Header.Set("Location", location)
-	resp.Write(c.Conn)
-	c.Close()
+	resp.StatusCode = http.StatusBadRequest
+	resp.Status = "400 HTTPS required"
+	resp.Header.Set("Connection", "close")
+	resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	resp.Body = io.NopCloser(strings.NewReader("HTTPS required\n"))
+	resp.ContentLength = int64(len("HTTPS required\n"))
+	_ = resp.Write(c.Conn)
+	_ = c.Close()
 	c.firstBuf = nil
 	return true
 }

@@ -94,7 +94,11 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/bear-ai/bx-ui/main/install.sh)
+	if [[ ! -f /usr/local/x-ui/install.sh ]]; then
+		LOGE "缺少经过发布包校验的安装脚本，请重新下载安装包"
+		return 1
+	fi
+	bash /usr/local/x-ui/install.sh
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -113,7 +117,11 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/bear-ai/bx-ui/main/install.sh)
+	if [[ ! -f /usr/local/x-ui/install.sh ]]; then
+		LOGE "缺少经过发布包校验的安装脚本，请重新下载安装包"
+		return 1
+	fi
+	bash /usr/local/x-ui/install.sh
     if [[ $? == 0 ]]; then
         LOGI "更新完成，已自动重启面板 "
         exit 0
@@ -146,15 +154,18 @@ uninstall() {
 }
 
 reset_user() {
-    confirm "确定要将用户名和密码重置为 admin 吗" "n"
+	confirm "确定要重置面板用户名和密码吗" "n"
     if [[ $? != 0 ]]; then
         if [[ $# == 0 ]]; then
             show_menu
         fi
         return 0
     fi
-    /usr/local/x-ui/x-ui setting -username admin -password admin
-    echo -e "用户名和密码已重置为 ${green}admin${plain}，现在请重启面板"
+	read -rp "请输入新用户名: " config_account
+	read -rsp "请输入至少 12 位的新密码: " config_password
+	echo
+	printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -username "${config_account}" -password-stdin || return 1
+	echo -e "用户名和密码已安全重置，现在请重启面板"
     confirm_restart
 }
 
@@ -186,7 +197,7 @@ set_port() {
         LOGD "已取消"
         before_show_menu
     else
-        /usr/local/x-ui/x-ui setting -port ${port}
+		/usr/local/x-ui/x-ui setting -port "${port}"
         echo -e "设置端口完毕，现在请重启面板，并使用新设置的端口 ${green}${port}${plain} 访问面板"
         confirm_restart
     fi
@@ -295,20 +306,18 @@ migrate_v2_ui() {
 }
 
 install_bbr() {
-    # temporary workaround for installing bbr
-    bash <(curl -L -s https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
+	LOGE "出于供应链安全考虑，已禁用以 root 身份直接运行第三方网络脚本。请使用发行版内核工具手动启用 BBR。"
     echo ""
     before_show_menu
 }
 
 update_shell() {
-    wget -O /usr/bin/x-ui -N --no-check-certificate https://raw.githubusercontent.com/bear-ai/bx-ui/main/x-ui.sh
-    if [[ $? != 0 ]]; then
-        echo ""
-        LOGE "下载脚本失败，请检查本机能否连接 Github"
-        before_show_menu
-    else
-        chmod +x /usr/bin/x-ui
+	if [[ ! -f /usr/local/x-ui/x-ui.sh ]]; then
+		echo ""
+		LOGE "当前发布包缺少管理脚本"
+		before_show_menu
+	else
+		install -m 0755 /usr/local/x-ui/x-ui.sh /usr/bin/x-ui
         LOGI "升级脚本成功，请重新运行脚本" && exit 0
     fi
 }
@@ -419,9 +428,17 @@ ssl_cert_issue() {
     confirm "我已确认以上内容[y/n]" "y"
     if [ $? -eq 0 ]; then
         cd ~
-        LOGI "安装Acme脚本"
-        curl https://get.acme.sh | sh
-        if [ $? -ne 0 ]; then
+		LOGI "下载并安装 Acme 脚本"
+		acme_installer=$(mktemp)
+		if ! curl --proto '=https' --tlsv1.2 -fsSLo "${acme_installer}" https://get.acme.sh; then
+			rm -f -- "${acme_installer}"
+			LOGE "下载 acme 脚本失败"
+			exit 1
+		fi
+		sh "${acme_installer}"
+		acme_status=$?
+		rm -f -- "${acme_installer}"
+		if [ ${acme_status} -ne 0 ]; then
             LOGE "安装acme脚本失败"
             exit 1
         fi
@@ -440,7 +457,6 @@ ssl_cert_issue() {
         LOGD "你的域名设置为:${CF_Domain}"
         LOGD "请设置API密钥:"
         read -p "Input your key here:" CF_GlobalKey
-        LOGD "你的API密钥为:${CF_GlobalKey}"
         LOGD "请设置注册邮箱:"
         read -p "Input your email here:" CF_AccountEmail
         LOGD "你的注册邮箱为:${CF_AccountEmail}"

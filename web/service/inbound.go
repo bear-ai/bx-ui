@@ -92,9 +92,16 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 	return nil
 }
 
-func (s *InboundService) DelInbound(id int) error {
+func (s *InboundService) DelInbound(id, userID int) error {
 	db := database.GetDB()
-	return db.Delete(model.Inbound{}, id).Error
+	result := db.Where("id = ? AND user_id = ?", id, userID).Delete(&model.Inbound{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
@@ -107,7 +114,19 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 	return inbound, nil
 }
 
-func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
+func (s *InboundService) GetInboundForUser(id, userID int) (*model.Inbound, error) {
+	db := database.GetDB()
+	inbound := &model.Inbound{}
+	err := db.Model(model.Inbound{}).
+		Where("id = ? AND user_id = ?", id, userID).
+		First(inbound).Error
+	if err != nil {
+		return nil, err
+	}
+	return inbound, nil
+}
+
+func (s *InboundService) UpdateInbound(userID int, inbound *model.Inbound) error {
 	exist, err := s.checkPortExist(inbound.Port, inbound.Id)
 	if err != nil {
 		return err
@@ -119,6 +138,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	oldInbound, err := s.GetInbound(inbound.Id)
 	if err != nil {
 		return err
+	}
+	if oldInbound.UserId != userID {
+		return gorm.ErrRecordNotFound
 	}
 	oldInbound.Up = inbound.Up
 	oldInbound.Down = inbound.Down

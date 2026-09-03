@@ -20,10 +20,11 @@ type IndexController struct {
 	BaseController
 
 	userService service.UserService
+	limiter     *loginLimiter
 }
 
 func NewIndexController(g *gin.RouterGroup) *IndexController {
-	a := &IndexController{}
+	a := &IndexController{limiter: newLoginLimiter()}
 	a.initRouter(g)
 	return a
 }
@@ -35,7 +36,7 @@ func (a *IndexController) initRouter(g *gin.RouterGroup) {
 }
 
 func (a *IndexController) index(c *gin.Context) {
-	if session.IsLogin(c) {
+	if resolveLogin(c) != nil {
 		c.Redirect(http.StatusTemporaryRedirect, "xui/")
 		return
 	}
@@ -43,6 +44,12 @@ func (a *IndexController) index(c *gin.Context) {
 }
 
 func (a *IndexController) login(c *gin.Context) {
+	remoteIP := getRemoteIp(c)
+	now := time.Now()
+	if !a.limiter.allow(remoteIP, now) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "msg": "登录失败次数过多，请稍后再试"})
+		return
+	}
 	var form LoginForm
 	err := c.ShouldBind(&form)
 	if err != nil {
@@ -58,15 +65,17 @@ func (a *IndexController) login(c *gin.Context) {
 		return
 	}
 	user := a.userService.CheckUser(form.Username, form.Password)
-	timeStr := time.Now().Format("2006-01-02 15:04:05")
+	timeStr := now.Format("2006-01-02 15:04:05")
 	if user == nil {
-		job.NewStatsNotifyJob().UserLoginNotify(form.Username, getRemoteIp(c), timeStr, 0)
-		logger.Infof("wrong username or password: \"%s\" \"%s\"", form.Username, form.Password)
+		a.limiter.failure(remoteIP, now)
+		job.NewStatsNotifyJob().UserLoginNotify(form.Username, remoteIP, timeStr, 0)
+		logger.Infof("failed login for username %q from %s", form.Username, remoteIP)
 		pureJsonMsg(c, false, "用户名或密码错误")
 		return
 	} else {
-		logger.Infof("%s login success,Ip Address:%s\n", form.Username, getRemoteIp(c))
-		job.NewStatsNotifyJob().UserLoginNotify(form.Username, getRemoteIp(c), timeStr, 1)
+		a.limiter.success(remoteIP)
+		logger.Infof("%s login success,Ip Address:%s\n", form.Username, remoteIP)
+		job.NewStatsNotifyJob().UserLoginNotify(form.Username, remoteIP, timeStr, 1)
 	}
 
 	err = session.SetLoginUser(c, user)
@@ -75,7 +84,7 @@ func (a *IndexController) login(c *gin.Context) {
 }
 
 func (a *IndexController) logout(c *gin.Context) {
-	user := session.GetLoginUser(c)
+	user := resolveLogin(c)
 	if user != nil {
 		logger.Info("user", user.Id, "logout")
 	}

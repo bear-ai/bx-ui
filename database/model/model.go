@@ -18,9 +18,10 @@ const (
 )
 
 type User struct {
-	Id       int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Id             int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	Username       string `json:"username" gorm:"uniqueIndex;not null"`
+	PasswordHash   string `json:"-" gorm:"column:password;not null"`
+	SessionVersion uint64 `json:"-" gorm:"not null;default:1"`
 }
 
 type Inbound struct {

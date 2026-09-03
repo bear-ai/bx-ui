@@ -50,14 +50,15 @@ func (j *StatsNotifyJob) SendMsgToTgbot(msg string) {
 		fmt.Println("get tgbot error:", err)
 		return
 	}
-	bot.Debug = true
-	fmt.Printf("Authorized on account %s", bot.Self.UserName)
+	bot.Debug = false
 	info := tgbotapi.NewMessage(int64(tgBotid), msg)
 	//msg.ReplyToMessageID = int(tgBotid)
-	bot.Send(info)
+	if _, err := bot.Send(info); err != nil {
+		logger.Warning("send telegram notification failed:", err)
+	}
 }
 
-//Here run is a interface method of Job interface
+// Here run is a interface method of Job interface
 func (j *StatsNotifyJob) Run() {
 	if !j.xrayService.IsXrayRunning() {
 		return

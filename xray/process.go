@@ -7,18 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"x-ui/util/common"
 
 	"github.com/Workiva/go-datastructures/queue"
 	statsservice "github.com/xtls/xray-core/app/stats/command"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var trafficRegex = regexp.MustCompile("(inbound|outbound)>>>([^>]+)>>>traffic>>>(downlink|uplink)")
@@ -44,7 +46,7 @@ func GetGeoipPath() string {
 }
 
 func stopProcess(p *Process) {
-	p.Stop()
+	_ = p.Stop()
 }
 
 type Process struct {
@@ -58,7 +60,9 @@ func NewProcess(xrayConfig *Config) *Process {
 }
 
 type process struct {
-	cmd *exec.Cmd
+	stateMu sync.RWMutex
+	running atomic.Bool
+	cmd     *exec.Cmd
 
 	version string
 	apiPort int
@@ -77,22 +81,19 @@ func newProcess(config *Config) *process {
 }
 
 func (p *process) IsRunning() bool {
-	if p.cmd == nil || p.cmd.Process == nil {
-		return false
-	}
-	if p.cmd.ProcessState == nil {
-		return true
-	}
-	return false
+	return p.running.Load()
 }
 
 func (p *process) GetErr() error {
+	p.stateMu.RLock()
+	defer p.stateMu.RUnlock()
 	return p.exitErr
 }
 
 func (p *process) GetResult() string {
-	if p.lines.Empty() && p.exitErr != nil {
-		return p.exitErr.Error()
+	exitErr := p.GetErr()
+	if p.lines.Empty() && exitErr != nil {
+		return exitErr.Error()
 	}
 	items, _ := p.lines.TakeUntil(func(item interface{}) bool {
 		return true
@@ -105,6 +106,8 @@ func (p *process) GetResult() string {
 }
 
 func (p *process) GetVersion() string {
+	p.stateMu.RLock()
+	defer p.stateMu.RUnlock()
 	return p.version
 }
 
@@ -126,6 +129,7 @@ func (p *process) refreshAPIPort() {
 }
 
 func (p *process) refreshVersion() {
+	// #nosec G204 -- the executable path and argument are application constants.
 	cmd := exec.Command(GetBinaryPath(), "-version")
 	data, err := cmd.Output()
 	if err != nil {
@@ -147,7 +151,9 @@ func (p *process) Start() (err error) {
 
 	defer func() {
 		if err != nil {
+			p.stateMu.Lock()
 			p.exitErr = err
+			p.stateMu.Unlock()
 		}
 	}()
 
@@ -156,11 +162,15 @@ func (p *process) Start() (err error) {
 		return common.NewErrorf("生成 xray 配置文件失败: %v", err)
 	}
 	configPath := GetConfigPath()
-	err = os.WriteFile(configPath, data, fs.ModePerm)
+	err = os.WriteFile(configPath, data, 0600)
 	if err != nil {
 		return common.NewErrorf("写入配置文件失败: %v", err)
 	}
+	if err = os.Chmod(configPath, 0600); err != nil {
+		return common.NewErrorf("设置 xray 配置文件权限失败: %v", err)
+	}
 
+	// #nosec G204 -- the executable and config paths are application constants.
 	cmd := exec.Command(GetBinaryPath(), "-c", configPath)
 	p.cmd = cmd
 
@@ -176,7 +186,7 @@ func (p *process) Start() (err error) {
 	go func() {
 		defer func() {
 			common.Recover("")
-			stdReader.Close()
+			_ = stdReader.Close()
 		}()
 		reader := bufio.NewReaderSize(stdReader, 8192)
 		for {
@@ -185,16 +195,16 @@ func (p *process) Start() (err error) {
 				return
 			}
 			if p.lines.Len() >= 100 {
-				p.lines.Get(1)
+				_, _ = p.lines.Get(1)
 			}
-			p.lines.Put(string(line))
+			_ = p.lines.Put(string(line))
 		}
 	}()
 
 	go func() {
 		defer func() {
 			common.Recover("")
-			errReader.Close()
+			_ = errReader.Close()
 		}()
 		reader := bufio.NewReaderSize(errReader, 8192)
 		for {
@@ -203,21 +213,27 @@ func (p *process) Start() (err error) {
 				return
 			}
 			if p.lines.Len() >= 100 {
-				p.lines.Get(1)
+				_, _ = p.lines.Get(1)
 			}
-			p.lines.Put(string(line))
-		}
-	}()
-
-	go func() {
-		err := cmd.Run()
-		if err != nil {
-			p.exitErr = err
+			_ = p.lines.Put(string(line))
 		}
 	}()
 
 	p.refreshVersion()
 	p.refreshAPIPort()
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	p.running.Store(true)
+	go func() {
+		err := cmd.Wait()
+		p.stateMu.Lock()
+		if err != nil {
+			p.exitErr = err
+		}
+		p.stateMu.Unlock()
+		p.running.Store(false)
+	}()
 
 	return nil
 }
@@ -233,7 +249,7 @@ func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {
 	if p.apiPort == 0 {
 		return nil, common.NewError("xray api port wrong:", p.apiPort)
 	}
-	conn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%v", p.apiPort), grpc.WithInsecure())
+	conn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%v", p.apiPort), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +269,9 @@ func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {
 	traffics := make([]*Traffic, 0)
 	for _, stat := range resp.GetStat() {
 		matchs := trafficRegex.FindStringSubmatch(stat.Name)
+		if len(matchs) != 4 {
+			continue
+		}
 		isInbound := matchs[1] == "inbound"
 		tag := matchs[2]
 		isDown := matchs[3] == "downlink"

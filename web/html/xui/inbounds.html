@@ -60,6 +60,9 @@
                                         <a-menu-item v-if="dbInbound.hasLink()" key="qrcode">
                                             <a-icon type="qrcode"></a-icon>二维码
                                         </a-menu-item>
+                                        <a-menu-item v-if="dbInbound.hasLink()" key="exportJSON">
+                                            <a-icon type="download"></a-icon>导出客户端 JSON
+                                        </a-menu-item>
                                         <a-menu-item key="edit">
                                             <a-icon type="edit"></a-icon>编辑
                                         </a-menu-item>
@@ -221,6 +224,9 @@
                     case "qrcode":
                         this.showQrcode(dbInbound);
                         break;
+                    case "exportJSON":
+                        this.exportJSON(dbInbound);
+                        break;
                     case "edit":
                         this.openEditInbound(dbInbound);
                         break;
@@ -319,6 +325,30 @@
             showQrcode(dbInbound) {
                 const link = dbInbound.genLink();
                 qrModal.show('二维码', link);
+            },
+            async exportJSON(dbInbound) {
+                this.loading();
+                try {
+                    const response = await axios.post(`/xui/inbound/export/${dbInbound.id}`, {
+                        address: dbInbound.address,
+                    }, {
+                        responseType: 'blob',
+                    });
+                    const blob = new Blob([response.data], { type: 'application/json;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `bx-inbound-${dbInbound.id}.json`;
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    this.$message.success('JSON 配置已导出');
+                } catch (error) {
+                    this.$message.error('JSON 配置导出失败，请检查入站配置');
+                } finally {
+                    this.loading(false);
+                }
             },
             showInfo(dbInbound) {
                 infoModal.show(dbInbound);

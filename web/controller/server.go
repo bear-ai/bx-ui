@@ -2,7 +2,9 @@ package controller
 
 import (
 	"github.com/gin-gonic/gin"
+	"sync"
 	"time"
+	"x-ui/logger"
 	"x-ui/web/global"
 	"x-ui/web/service"
 )
@@ -11,6 +13,7 @@ type ServerController struct {
 	BaseController
 
 	serverService service.ServerService
+	mu            sync.RWMutex
 
 	lastStatus        *service.Status
 	lastGetStatusTime time.Time
@@ -32,37 +35,53 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/server")
 
 	g.Use(a.checkLogin)
+	g.Use(a.checkCSRF)
 	g.POST("/status", a.status)
 	g.POST("/getXrayVersion", a.getXrayVersion)
 	g.POST("/installXray/:version", a.installXray)
 }
 
 func (a *ServerController) refreshStatus() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.lastStatus = a.serverService.GetStatus(a.lastStatus)
 }
 
 func (a *ServerController) startTask() {
 	webServer := global.GetWebServer()
 	c := webServer.GetCron()
-	c.AddFunc("@every 2s", func() {
+	_, err := c.AddFunc("@every 2s", func() {
+		a.mu.RLock()
+		lastGet := a.lastGetStatusTime
+		a.mu.RUnlock()
 		now := time.Now()
-		if now.Sub(a.lastGetStatusTime) > time.Minute*3 {
+		if now.Sub(lastGet) > time.Minute*3 {
 			return
 		}
 		a.refreshStatus()
 	})
+	if err != nil {
+		logger.Error("schedule server status job failed:", err)
+	}
 }
 
 func (a *ServerController) status(c *gin.Context) {
+	a.mu.Lock()
 	a.lastGetStatusTime = time.Now()
+	status := a.lastStatus
+	a.mu.Unlock()
 
-	jsonObj(c, a.lastStatus, nil)
+	jsonObj(c, status, nil)
 }
 
 func (a *ServerController) getXrayVersion(c *gin.Context) {
 	now := time.Now()
-	if now.Sub(a.lastGetVersionsTime) <= time.Minute {
-		jsonObj(c, a.lastVersions, nil)
+	a.mu.RLock()
+	lastGet := a.lastGetVersionsTime
+	versionsCache := append([]string(nil), a.lastVersions...)
+	a.mu.RUnlock()
+	if now.Sub(lastGet) <= time.Minute {
+		jsonObj(c, versionsCache, nil)
 		return
 	}
 
@@ -72,8 +91,10 @@ func (a *ServerController) getXrayVersion(c *gin.Context) {
 		return
 	}
 
-	a.lastVersions = versions
+	a.mu.Lock()
+	a.lastVersions = append([]string(nil), versions...)
 	a.lastGetVersionsTime = time.Now()
+	a.mu.Unlock()
 
 	jsonObj(c, versions, nil)
 }

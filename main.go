@@ -3,9 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	_ "unsafe"
 	"x-ui/config"
@@ -39,6 +41,17 @@ func runWebServer() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	userService := service.UserService{}
+	if err := userService.MigratePasswordHashes(); err != nil {
+		log.Fatal(err)
+	}
+	username, initialPassword, created, err := userService.EnsureInitialUser()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if created {
+		log.Printf("initial administrator created; username=%s password=%s (change it immediately)", username, initialPassword)
+	}
 
 	var server *web.Server
 
@@ -52,7 +65,7 @@ func runWebServer() {
 
 	sigCh := make(chan os.Signal, 1)
 	//信号量捕获处理
-	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGKILL)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM)
 	for {
 		sig := <-sigCh
 
@@ -70,7 +83,9 @@ func runWebServer() {
 				return
 			}
 		default:
-			server.Stop()
+			if err := server.Stop(); err != nil {
+				logger.Warning("stop server err:", err)
+			}
 			return
 		}
 	}
@@ -103,15 +118,11 @@ func showSetting(show bool) {
 		userModel, err := userService.GetFirstUser()
 		if err != nil {
 			fmt.Println("get current user info failed,error info:", err)
-		}
-		username := userModel.Username
-		userpasswd := userModel.Password
-		if (username == "") || (userpasswd == "") {
-			fmt.Println("current username or password is empty")
+			return
 		}
 		fmt.Println("current pannel settings as follows:")
-		fmt.Println("username:", username)
-		fmt.Println("userpasswd:", userpasswd)
+		fmt.Println("username:", userModel.Username)
+		fmt.Println("password: [hidden]")
 		fmt.Println("port:", port)
 	}
 }
@@ -223,6 +234,7 @@ func main() {
 	var port int
 	var username string
 	var password string
+	var passwordStdin bool
 	var tgbottoken string
 	var tgbotchatid int
 	var enabletgbot bool
@@ -233,7 +245,7 @@ func main() {
 	settingCmd.BoolVar(&show, "show", false, "show current settings")
 	settingCmd.IntVar(&port, "port", 0, "set panel port")
 	settingCmd.StringVar(&username, "username", "", "set login username")
-	settingCmd.StringVar(&password, "password", "", "set login password")
+	settingCmd.BoolVar(&passwordStdin, "password-stdin", false, "read login password from stdin")
 	settingCmd.StringVar(&tgbottoken, "tgbottoken", "", "set telegrame bot token")
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "set telegrame bot cron time")
 	settingCmd.IntVar(&tgbotchatid, "tgbotchatid", 0, "set telegrame bot chat id")
@@ -278,6 +290,14 @@ func main() {
 		if err != nil {
 			fmt.Println(err)
 			return
+		}
+		if passwordStdin {
+			value, readErr := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+			if readErr != nil {
+				fmt.Println("read password failed:", readErr)
+				return
+			}
+			password = strings.TrimRight(string(value), "\r\n")
 		}
 		if reset {
 			resetSetting()

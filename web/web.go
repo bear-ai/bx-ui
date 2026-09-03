@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"embed"
+	"errors"
 	"html/template"
 	"io"
 	"io/fs"
@@ -145,7 +146,7 @@ func (s *Server) getHtmlTemplate(funcMap template.FuncMap) (*template.Template, 
 	return t, nil
 }
 
-func (s *Server) initRouter() (*gin.Engine, error) {
+func (s *Server) initRouter(tlsEnabled bool) (*gin.Engine, error) {
 	if config.IsDebug() {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -155,8 +156,11 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	}
 
 	engine := gin.Default()
+	if err := engine.SetTrustedProxies(nil); err != nil {
+		return nil, err
+	}
 
-	secret, err := s.settingService.GetSecret()
+	authKey, encryptionKey, err := s.settingService.GetSessionKeys()
 	if err != nil {
 		return nil, err
 	}
@@ -167,15 +171,38 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	}
 	assetsBasePath := basePath + "assets/"
 
-	store := cookie.NewStore(secret)
-	engine.Use(sessions.Sessions("session", store))
+	store := cookie.NewStore(authKey, encryptionKey)
+	store.Options(sessions.Options{
+		Path:     basePath,
+		MaxAge:   24 * 60 * 60,
+		HttpOnly: true,
+		Secure:   tlsEnabled,
+		SameSite: http.SameSiteStrictMode,
+	})
+	engine.Use(sessions.Sessions("bx_session", store))
+	engine.Use(func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		if tlsEnabled {
+			c.Header("Strict-Transport-Security", "max-age=31536000")
+		}
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<20)
+		}
+		c.Next()
+	})
 	engine.Use(func(c *gin.Context) {
 		c.Set("base_path", basePath)
 	})
 	engine.Use(func(c *gin.Context) {
 		uri := c.Request.RequestURI
 		if strings.HasPrefix(uri, assetsBasePath) {
-			c.Header("Cache-Control", "max-age=31536000")
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			c.Header("Cache-Control", "no-store")
 		}
 	})
 	err = s.initI18n(engine)
@@ -252,7 +279,7 @@ func (s *Server) initI18n(engine *gin.Engine) error {
 		return names
 	}
 
-	var localizer *i18n.Localizer
+	localizer := i18n.NewLocalizer(bundle, language.SimplifiedChinese.String())
 
 	engine.FuncMap["i18n"] = func(key string, params ...string) (string, error) {
 		names := findI18nParamNames(key)
@@ -269,13 +296,6 @@ func (s *Server) initI18n(engine *gin.Engine) error {
 		})
 	}
 
-	engine.Use(func(c *gin.Context) {
-		accept := c.GetHeader("Accept-Language")
-		localizer = i18n.NewLocalizer(bundle, accept)
-		c.Set("localizer", localizer)
-		c.Next()
-	})
-
 	return nil
 }
 
@@ -285,16 +305,22 @@ func (s *Server) startTask() {
 		logger.Warning("start xray failed:", err)
 	}
 	// 每 30 秒检查一次 xray 是否在运行
-	s.cron.AddJob("@every 30s", job.NewCheckXrayRunningJob())
+	if _, err := s.cron.AddJob("@every 30s", job.NewCheckXrayRunningJob()); err != nil {
+		logger.Error("schedule Xray health check failed:", err)
+	}
 
 	go func() {
 		time.Sleep(time.Second * 5)
 		// 每 10 秒统计一次流量，首次启动延迟 5 秒，与重启 xray 的时间错开
-		s.cron.AddJob("@every 10s", job.NewXrayTrafficJob())
+		if _, err := s.cron.AddJob("@every 10s", job.NewXrayTrafficJob()); err != nil {
+			logger.Error("schedule Xray traffic job failed:", err)
+		}
 	}()
 
 	// 每 30 秒检查一次 inbound 流量超出和到期的情况
-	s.cron.AddJob("@every 30s", job.NewCheckInboundJob())
+	if _, err := s.cron.AddJob("@every 30s", job.NewCheckInboundJob()); err != nil {
+		logger.Error("schedule inbound health check failed:", err)
+	}
 	// 每一天提示一次流量情况,上海时间8点30
 	var entry cron.EntryID
 	isTgbotenabled, err := s.settingService.GetTgbotenabled()
@@ -319,7 +345,9 @@ func (s *Server) Start() (err error) {
 	//这是一个匿名函数，没没有函数名
 	defer func() {
 		if err != nil {
-			s.Stop()
+			if stopErr := s.Stop(); stopErr != nil {
+				logger.Warning("cleanup failed:", stopErr)
+			}
 		}
 	}()
 
@@ -330,16 +358,19 @@ func (s *Server) Start() (err error) {
 	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
 	s.cron.Start()
 
-	engine, err := s.initRouter()
-	if err != nil {
-		return err
-	}
-
 	certFile, err := s.settingService.GetCertFile()
 	if err != nil {
 		return err
 	}
 	keyFile, err := s.settingService.GetKeyFile()
+	if err != nil {
+		return err
+	}
+	tlsEnabled := certFile != "" || keyFile != ""
+	if (certFile == "") != (keyFile == "") {
+		return common.NewError("TLS 证书和私钥必须同时配置")
+	}
+	engine, err := s.initRouter(tlsEnabled)
 	if err != nil {
 		return err
 	}
@@ -356,20 +387,21 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	if certFile != "" || keyFile != "" {
+	if tlsEnabled {
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			listener.Close()
+			_ = listener.Close()
 			return err
 		}
 		c := &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		}
 		listener = network.NewAutoHttpsListener(listener)
 		listener = tls.NewListener(listener, c)
 	}
 
-	if certFile != "" || keyFile != "" {
+	if tlsEnabled {
 		logger.Info("web server run https on", listener.Addr())
 	} else {
 		logger.Info("web server run http on", listener.Addr())
@@ -379,11 +411,18 @@ func (s *Server) Start() (err error) {
 	s.startTask()
 
 	s.httpServer = &http.Server{
-		Handler: engine,
+		Handler:           engine,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
-		s.httpServer.Serve(listener)
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			logger.Error("web server failed:", err)
+		}
 	}()
 
 	return nil
@@ -391,17 +430,24 @@ func (s *Server) Start() (err error) {
 
 func (s *Server) Stop() error {
 	s.cancel()
-	s.xrayService.StopXray()
+	if err := s.xrayService.StopXray(); err != nil && err.Error() != "xray is not running" {
+		logger.Warning("stop xray failed:", err)
+	}
 	if s.cron != nil {
 		s.cron.Stop()
 	}
 	var err1 error
 	var err2 error
 	if s.httpServer != nil {
-		err1 = s.httpServer.Shutdown(s.ctx)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		err1 = s.httpServer.Shutdown(shutdownCtx)
 	}
 	if s.listener != nil {
 		err2 = s.listener.Close()
+		if errors.Is(err2, net.ErrClosed) {
+			err2 = nil
+		}
 	}
 	return common.Combine(err1, err2)
 }

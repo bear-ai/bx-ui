@@ -2,8 +2,10 @@ package service
 
 import (
 	"archive/zip"
-	"bytes"
+	"bufio"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
@@ -12,10 +14,12 @@ import (
 	"github.com/shirou/gopsutil/mem"
 	"github.com/shirou/gopsutil/net"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"time"
 	"x-ui/logger"
 	"x-ui/util/sys"
@@ -70,6 +74,30 @@ type Release struct {
 
 type ServerService struct {
 	xrayService XrayService
+}
+
+var (
+	releaseVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+	releaseHTTPClient     = &http.Client{Timeout: 2 * time.Minute}
+)
+
+func getLimited(url string, limit int64) ([]byte, error) {
+	resp, err := releaseHTTPClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download failed: HTTP %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("download exceeded size limit")
+	}
+	return data, nil
 }
 
 func (s *ServerService) GetStatus(lastStatus *Status) *Status {
@@ -172,21 +200,13 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 
 func (s *ServerService) GetXrayVersions() ([]string, error) {
 	url := "https://api.github.com/repos/XTLS/Xray-core/releases"
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-
-	defer resp.Body.Close()
-	buffer := bytes.NewBuffer(make([]byte, 8192))
-	buffer.Reset()
-	_, err = buffer.ReadFrom(resp.Body)
+	data, err := getLimited(url, 2<<20)
 	if err != nil {
 		return nil, err
 	}
 
 	releases := make([]Release, 0)
-	err = json.Unmarshal(buffer.Bytes(), &releases)
+	err = json.Unmarshal(data, &releases)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +218,9 @@ func (s *ServerService) GetXrayVersions() ([]string, error) {
 }
 
 func (s *ServerService) downloadXRay(version string) (string, error) {
+	if !releaseVersionPattern.MatchString(version) {
+		return "", errors.New("invalid Xray release version")
+	}
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
 
@@ -215,25 +238,66 @@ func (s *ServerService) downloadXRay(version string) (string, error) {
 
 	fileName := fmt.Sprintf("Xray-%s-%s.zip", osName, arch)
 	url := fmt.Sprintf("https://github.com/XTLS/Xray-core/releases/download/%s/%s", version, fileName)
-	resp, err := http.Get(url)
+	resp, err := releaseHTTPClient.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed: HTTP %s", resp.Status)
+	}
 
-	os.Remove(fileName)
-	file, err := os.Create(fileName)
+	file, err := os.CreateTemp("", "bx-ui-xray-*.zip")
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	tempName := file.Name()
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = os.Remove(tempName)
+		}
+	}()
 
-	_, err = io.Copy(file, resp.Body)
+	written, err := io.Copy(file, io.LimitReader(resp.Body, (200<<20)+1))
 	if err != nil {
 		return "", err
 	}
+	if written > 200<<20 {
+		return "", errors.New("Xray archive exceeded size limit")
+	}
+	if err = file.Sync(); err != nil {
+		return "", err
+	}
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	if _, err = io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	digestData, err := getLimited(url+".dgst", 4096)
+	if err != nil {
+		return "", err
+	}
+	wanted := ""
+	scanner := bufio.NewScanner(strings.NewReader(string(digestData)))
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "SHA2-256=") {
+			wanted = strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "SHA2-256="))
+			break
+		}
+	}
+	if wanted == "" || !strings.EqualFold(wanted, fmt.Sprintf("%x", hash.Sum(nil))) {
+		return "", errors.New("Xray archive SHA-256 verification failed")
+	}
+	if err = file.Close(); err != nil {
+		return "", err
+	}
 
-	return fileName, nil
+	keep = true
+	return tempName, nil
 }
 
 func (s *ServerService) UpdateXray(version string) error {
@@ -242,13 +306,13 @@ func (s *ServerService) UpdateXray(version string) error {
 		return err
 	}
 
-	zipFile, err := os.Open(zipFileName)
+	zipFile, err := os.Open(zipFileName) // #nosec G304 -- path comes only from os.CreateTemp above.
 	if err != nil {
 		return err
 	}
 	defer func() {
-		zipFile.Close()
-		os.Remove(zipFileName)
+		_ = zipFile.Close()
+		_ = os.Remove(zipFileName)
 	}()
 
 	stat, err := zipFile.Stat()
@@ -260,40 +324,81 @@ func (s *ServerService) UpdateXray(version string) error {
 		return err
 	}
 
-	s.xrayService.StopXray()
+	type extractedFile struct {
+		temp   string
+		target string
+	}
+	extracted := make([]extractedFile, 0, 3)
 	defer func() {
-		err := s.xrayService.RestartXray(true)
-		if err != nil {
-			logger.Error("start xray failed:", err)
+		for _, file := range extracted {
+			_ = os.Remove(file.temp)
 		}
 	}()
 
-	copyZipFile := func(zipName string, fileName string) error {
-		zipFile, err := reader.Open(zipName)
+	extractZipFile := func(zipName, target string, mode os.FileMode) error {
+		archiveFile, err := reader.Open(zipName)
 		if err != nil {
 			return err
 		}
-		os.Remove(fileName)
-		file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fs.ModePerm)
+		defer archiveFile.Close()
+		file, err := os.CreateTemp(filepath.Dir(target), ".bx-ui-update-*")
 		if err != nil {
 			return err
 		}
-		defer file.Close()
-		_, err = io.Copy(file, zipFile)
+		tempName := file.Name()
+		ok := false
+		defer func() {
+			_ = file.Close()
+			if !ok {
+				_ = os.Remove(tempName)
+			}
+		}()
+		written, err := io.Copy(file, io.LimitReader(archiveFile, (300<<20)+1))
+		if err != nil || written > 300<<20 {
+			if err == nil {
+				err = errors.New("archive member exceeded size limit")
+			}
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			return err
+		}
+		if err := file.Chmod(mode); err != nil {
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		extracted = append(extracted, extractedFile{temp: tempName, target: target})
+		ok = true
+		return nil
+	}
+
+	err = extractZipFile("xray", xray.GetBinaryPath(), 0755)
+	if err != nil {
+		return err
+	}
+	err = extractZipFile("geosite.dat", xray.GetGeositePath(), 0644)
+	if err != nil {
+		return err
+	}
+	err = extractZipFile("geoip.dat", xray.GetGeoipPath(), 0644)
+	if err != nil {
 		return err
 	}
 
-	err = copyZipFile("xray", xray.GetBinaryPath())
-	if err != nil {
+	if err := s.xrayService.StopXray(); err != nil && err.Error() != "xray is not running" {
 		return err
 	}
-	err = copyZipFile("geosite.dat", xray.GetGeositePath())
-	if err != nil {
-		return err
-	}
-	err = copyZipFile("geoip.dat", xray.GetGeoipPath())
-	if err != nil {
-		return err
+	defer func() {
+		if restartErr := s.xrayService.RestartXray(true); restartErr != nil {
+			logger.Error("start xray failed:", restartErr)
+		}
+	}()
+	for _, file := range extracted {
+		if err := os.Rename(file.temp, file.target); err != nil {
+			return err
+		}
 	}
 
 	return nil

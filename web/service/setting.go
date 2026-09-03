@@ -1,7 +1,9 @@
 package service
 
 import (
+	"crypto/rand"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"reflect"
@@ -12,7 +14,6 @@ import (
 	"x-ui/database/model"
 	"x-ui/logger"
 	"x-ui/util/common"
-	"x-ui/util/random"
 	"x-ui/util/reflect_util"
 	"x-ui/web/entity"
 )
@@ -26,7 +27,6 @@ var defaultValueMap = map[string]string{
 	"webPort":            "54321",
 	"webCertFile":        "",
 	"webKeyFile":         "",
-	"secret":             random.Seq(32),
 	"webBasePath":        "/",
 	"timeLocation":       "Asia/Shanghai",
 	"tgBotEnable":        "false",
@@ -242,15 +242,36 @@ func (s *SettingService) GetKeyFile() (string, error) {
 	return s.getString("webKeyFile")
 }
 
-func (s *SettingService) GetSecret() ([]byte, error) {
-	secret, err := s.getString("secret")
-	if secret == defaultValueMap["secret"] {
-		err := s.saveSetting("secret", secret)
-		if err != nil {
-			logger.Warning("save secret failed:", err)
+func (s *SettingService) getOrCreateRandomKey(key string, size int) ([]byte, error) {
+	setting, err := s.getSetting(key)
+	if err == nil {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(setting.Value)
+		if decodeErr == nil && len(decoded) == size {
+			return decoded, nil
 		}
+	} else if !database.IsNotFound(err) {
+		return nil, err
 	}
-	return []byte(secret), err
+	value := make([]byte, size)
+	if _, err := rand.Read(value); err != nil {
+		return nil, err
+	}
+	if err := s.saveSetting(key, base64.RawURLEncoding.EncodeToString(value)); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (s *SettingService) GetSessionKeys() ([]byte, []byte, error) {
+	authKey, err := s.getOrCreateRandomKey("sessionAuthKey", 64)
+	if err != nil {
+		return nil, nil, err
+	}
+	encryptionKey, err := s.getOrCreateRandomKey("sessionEncryptionKey", 32)
+	if err != nil {
+		return nil, nil, err
+	}
+	return authKey, encryptionKey, nil
 }
 
 func (s *SettingService) GetBasePath() (string, error) {

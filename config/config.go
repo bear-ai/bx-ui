@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -46,5 +47,8 @@ func IsDebug() bool {
 }
 
 func GetDBPath() string {
+	if dbPath := os.Getenv("XUI_DB_PATH"); filepath.IsAbs(dbPath) {
+		return dbPath
+	}
 	return fmt.Sprintf("/etc/%s/%s.db", GetName(), GetName())
 }

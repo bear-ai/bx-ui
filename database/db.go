@@ -4,7 +4,6 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"io/fs"
 	"os"
 	"path"
 	"x-ui/config"
@@ -14,23 +13,7 @@ import (
 var db *gorm.DB
 
 func initUser() error {
-	err := db.AutoMigrate(&model.User{})
-	if err != nil {
-		return err
-	}
-	var count int64
-	err = db.Model(&model.User{}).Count(&count).Error
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		user := &model.User{
-			Username: "admin",
-			Password: "admin",
-		}
-		return db.Create(user).Error
-	}
-	return nil
+	return db.AutoMigrate(&model.User{})
 }
 
 func initInbound() error {
@@ -43,8 +26,11 @@ func initSetting() error {
 
 func InitDB(dbPath string) error {
 	dir := path.Dir(dbPath)
-	err := os.MkdirAll(dir, fs.ModeDir)
+	err := os.MkdirAll(dir, 0700)
 	if err != nil {
+		return err
+	}
+	if err = os.Chmod(dir, 0700); err != nil { // #nosec G302 -- directories require execute permission.
 		return err
 	}
 
@@ -61,6 +47,9 @@ func InitDB(dbPath string) error {
 	}
 	db, err = gorm.Open(sqlite.Open(dbPath), c)
 	if err != nil {
+		return err
+	}
+	if err = os.Chmod(dbPath, 0600); err != nil {
 		return err
 	}
 

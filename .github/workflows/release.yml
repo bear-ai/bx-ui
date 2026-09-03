@@ -6,7 +6,7 @@ on:
       - "0.*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -36,7 +36,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.x"
+          go-version: "1.26.x"
           cache: true
 
       - name: Install cross compiler
@@ -60,8 +60,11 @@ jobs:
           mkdir -p "dist/x-ui/bin"
           install -m 755 bx-ui "dist/x-ui/x-ui"
           install -m 755 x-ui.sh "dist/x-ui/x-ui.sh"
+          install -m 755 install.sh "dist/x-ui/install.sh"
           install -m 644 x-ui.service "dist/x-ui/x-ui.service"
-          curl -fL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}" -o xray.zip
+          curl --proto '=https' --tlsv1.2 -fL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}" -o xray.zip
+          curl --proto '=https' --tlsv1.2 -fL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}.dgst" -o xray.zip.dgst
+          test "$(sha256sum xray.zip | awk '{print $1}')" = "$(awk -F'= ' '/^SHA2-256=/{print $2}' xray.zip.dgst)"
           unzip -j xray.zip xray geoip.dat geosite.dat -d "dist/x-ui/bin"
           mv "dist/x-ui/bin/xray" "dist/x-ui/bin/xray-linux-${ARCH}"
           tar -C dist -czf "x-ui-linux-${ARCH}.tar.gz" x-ui
@@ -80,6 +83,8 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download packages
         uses: actions/download-artifact@v4

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.24
+ARG GO_VERSION=1.26
 ARG DEBIAN_VERSION=bookworm-slim
 ARG XRAY_VERSION=v26.3.27
 
@@ -21,8 +21,11 @@ RUN apt-get update \
         arm64) xray_asset="Xray-linux-arm64-v8a.zip" ;; \
         *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
        esac \
-    && curl -fsSLo /tmp/xray.zip \
+    && curl --proto '=https' --tlsv1.2 -fsSLo /tmp/xray.zip \
         "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${xray_asset}" \
+    && curl --proto '=https' --tlsv1.2 -fsSLo /tmp/xray.zip.dgst \
+        "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${xray_asset}.dgst" \
+    && test "$(sha256sum /tmp/xray.zip | awk '{print $1}')" = "$(awk -F'= ' '/^SHA2-256=/{print $2}' /tmp/xray.zip.dgst)" \
     && mkdir -p /out/bin \
     && unzip -jq /tmp/xray.zip xray geoip.dat geosite.dat -d /out/bin \
     && mv /out/bin/xray "/out/bin/xray-linux-${TARGETARCH}" \

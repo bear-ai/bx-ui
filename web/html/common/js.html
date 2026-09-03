@@ -1,5 +1,5 @@
 {{define "js"}}
-<script src="{{ .base_path }}assets/vue@2.6.12/vue.min.js"></script>
+<script src="{{ .base_path }}assets/vue@2.7.16/vue.min.js"></script>
 <script src="{{ .base_path }}assets/moment/moment.min.js"></script>
 <script src="{{ .base_path }}assets/ant-design-vue@1.7.2/antd.min.js"></script>
 <script src="{{ .base_path }}assets/base64/base64.min.js"></script>
@@ -17,5 +17,6 @@
 <script>
     const basePath = '{{ .base_path }}';
     axios.defaults.baseURL = basePath;
+    axios.defaults.headers.common['X-CSRF-Token'] = document.querySelector('meta[name="csrf-token"]').content;
 </script>
 {{end}}

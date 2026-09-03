@@ -11,7 +11,7 @@ import (
 )
 
 var p *xray.Process
-var lock sync.Mutex
+var lock sync.RWMutex
 var isNeedXrayRestart atomic.Bool
 var result string
 
@@ -21,10 +21,14 @@ type XrayService struct {
 }
 
 func (s *XrayService) IsXrayRunning() bool {
+	lock.RLock()
+	defer lock.RUnlock()
 	return p != nil && p.IsRunning()
 }
 
 func (s *XrayService) GetXrayErr() error {
+	lock.RLock()
+	defer lock.RUnlock()
 	if p == nil {
 		return nil
 	}
@@ -32,10 +36,12 @@ func (s *XrayService) GetXrayErr() error {
 }
 
 func (s *XrayService) GetXrayResult() string {
+	lock.Lock()
+	defer lock.Unlock()
 	if result != "" {
 		return result
 	}
-	if s.IsXrayRunning() {
+	if p != nil && p.IsRunning() {
 		return ""
 	}
 	if p == nil {
@@ -46,6 +52,8 @@ func (s *XrayService) GetXrayResult() string {
 }
 
 func (s *XrayService) GetXrayVersion() string {
+	lock.RLock()
+	defer lock.RUnlock()
 	if p == nil {
 		return "Unknown"
 	}
@@ -79,7 +87,9 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 }
 
 func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, error) {
-	if !s.IsXrayRunning() {
+	lock.RLock()
+	defer lock.RUnlock()
+	if p == nil || !p.IsRunning() {
 		return nil, errors.New("xray is not running")
 	}
 	return p.GetTraffic(true)
@@ -100,7 +110,9 @@ func (s *XrayService) RestartXray(isForce bool) error {
 			logger.Debug("not need to restart xray")
 			return nil
 		}
-		p.Stop()
+		if err := p.Stop(); err != nil {
+			logger.Warning("stop old xray process failed:", err)
+		}
 	}
 
 	p = xray.NewProcess(xrayConfig)
@@ -112,7 +124,7 @@ func (s *XrayService) StopXray() error {
 	lock.Lock()
 	defer lock.Unlock()
 	logger.Debug("stop xray")
-	if s.IsXrayRunning() {
+	if p != nil && p.IsRunning() {
 		return p.Stop()
 	}
 	return errors.New("xray is not running")

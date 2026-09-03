@@ -1,5 +1,8 @@
 #!/bin/bash
 
+set -o pipefail
+umask 077
+
 red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
@@ -88,14 +91,14 @@ config_after_install() {
     if [[ x"${config_confirm}" == x"y" || x"${config_confirm}" == x"Y" ]]; then
         read -p "请设置您的账户名:" config_account
         echo -e "${yellow}您的账户名将设定为:${config_account}${plain}"
-        read -p "请设置您的账户密码:" config_password
-        echo -e "${yellow}您的账户密码将设定为:${config_password}${plain}"
+		read -rsp "请设置您的账户密码:" config_password
+		echo
         read -p "请设置面板访问端口:" config_port
         echo -e "${yellow}您的面板访问端口将设定为:${config_port}${plain}"
         echo -e "${yellow}确认设定,设定中${plain}"
-        /usr/local/x-ui/x-ui setting -username ${config_account} -password ${config_password}
+		printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -username "${config_account}" -password-stdin
         echo -e "${yellow}账户密码设定完成${plain}"
-        /usr/local/x-ui/x-ui setting -port ${config_port}
+		/usr/local/x-ui/x-ui setting -port "${config_port}"
         echo -e "${yellow}面板端口设定完成${plain}"
     else
         echo -e "${red}已取消,所有设置项均为默认设置,请及时修改${plain}"
@@ -103,10 +106,16 @@ config_after_install() {
 }
 
 install_x-ui() {
+    local is_upgrade=false
+    if [[ -s /etc/x-ui/x-ui.db ]]; then
+        is_upgrade=true
+        echo -e "${yellow}检测到现有数据库，本次升级将保留面板账号、端口和入站配置${plain}"
+    fi
+
     cd /usr/local/
 
     if [[ $# -eq 0 ]]; then
-        last_version=$(curl -Ls "https://api.github.com/repos/bear-ai/bx-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+		last_version=$(curl --proto '=https' --tlsv1.2 -fLsS "https://api.github.com/repos/bear-ai/bx-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$last_version" ]]; then
             echo -e "${red}检测 x-ui 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 x-ui 版本安装${plain}"
             exit 1
@@ -116,14 +125,18 @@ install_x-ui() {
         last_version=$1
         echo -e "开始安装 x-ui v$1"
     fi
+	if [[ ! "${last_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		echo -e "${red}版本号格式无效${plain}"
+		exit 1
+	fi
 
     archive="x-ui-linux-${arch}.tar.gz"
     url="https://github.com/bear-ai/bx-ui/releases/download/${last_version}/${archive}"
-    if ! wget -N --no-check-certificate -O "/usr/local/${archive}" "${url}"; then
+	if ! wget --https-only -N -O "/usr/local/${archive}" "${url}"; then
         echo -e "${red}下载 x-ui ${last_version} 失败，请确认版本和服务器到 Github 的网络${plain}"
         exit 1
     fi
-    if ! wget -N --no-check-certificate -O "/usr/local/${archive}.sha256" "${url}.sha256"; then
+	if ! wget --https-only -N -O "/usr/local/${archive}.sha256" "${url}.sha256"; then
         echo -e "${red}下载校验文件失败，已停止安装${plain}"
         exit 1
     fi
@@ -135,24 +148,33 @@ install_x-ui() {
     systemctl stop x-ui
 
     if [[ -e /usr/local/x-ui/ ]]; then
-        rm /usr/local/x-ui/ -rf
+		rm -rf -- /usr/local/x-ui/
     fi
 
     tar zxvf "${archive}"
     rm "${archive}" "${archive}.sha256"
+	install -d -m 0700 /etc/x-ui
+	if [[ -f /etc/x-ui/x-ui.db ]]; then
+		chmod 0600 /etc/x-ui/x-ui.db
+	fi
     cd x-ui
     chmod +x x-ui bin/xray-linux-${arch}
+	if ! getent group x-ui >/dev/null; then
+		groupadd --system x-ui
+	fi
+	if ! id -u x-ui >/dev/null 2>&1; then
+		useradd --system --gid x-ui --home-dir /nonexistent --shell /usr/sbin/nologin x-ui
+	fi
+	chown -R x-ui:x-ui /etc/x-ui /usr/local/x-ui/bin
     cp -f x-ui.service /etc/systemd/system/
-    wget --no-check-certificate -O /usr/bin/x-ui https://raw.githubusercontent.com/bear-ai/bx-ui/main/x-ui.sh
+	install -m 0755 /usr/local/x-ui/x-ui.sh /usr/bin/x-ui
     chmod +x /usr/local/x-ui/x-ui.sh
     chmod +x /usr/bin/x-ui
-    config_after_install
-    #echo -e "如果是全新安装，默认网页端口为 ${green}54321${plain}，用户名和密码默认都是 ${green}admin${plain}"
-    #echo -e "请自行确保此端口没有被其他程序占用，${yellow}并且确保 54321 端口已放行${plain}"
-    #    echo -e "若想将 54321 修改为其它端口，输入 x-ui 命令进行修改，同样也要确保你修改的端口也是放行的"
-    #echo -e ""
-    #echo -e "如果是更新面板，则按你之前的方式访问面板"
-    #echo -e ""
+    if [[ "${is_upgrade}" == "false" ]]; then
+        config_after_install
+    else
+        echo -e "${green}现有面板配置已保留${plain}"
+    fi
     systemctl daemon-reload
     systemctl enable x-ui
     systemctl start x-ui
@@ -177,4 +199,8 @@ install_x-ui() {
 
 echo -e "${green}开始安装${plain}"
 install_base
-install_x-ui $1
+if [[ $# -gt 0 ]]; then
+	install_x-ui "$1"
+else
+	install_x-ui
+fi

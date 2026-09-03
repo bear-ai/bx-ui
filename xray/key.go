@@ -26,12 +26,13 @@ func runKeyCommand(command string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// #nosec G204 -- command is selected only from fixed constants below.
 	output, err := exec.CommandContext(ctx, GetBinaryPath(), command).CombinedOutput()
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", fmt.Errorf("xray %s timed out", command)
 		}
-		return "", fmt.Errorf("xray %s failed: %v: %s", command, err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("xray %s failed: %w", command, err)
 	}
 	return string(output), nil
 }
