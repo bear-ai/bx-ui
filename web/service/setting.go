@@ -25,6 +25,8 @@ var defaultValueMap = map[string]string{
 	"xrayTemplateConfig": xrayTemplateConfig,
 	"webListen":          "",
 	"webPort":            "54321",
+	"webDomain":          "",
+	"webHTTPSPort":       "443",
 	"webCertFile":        "",
 	"webKeyFile":         "",
 	"webBasePath":        "/",
@@ -232,6 +234,14 @@ func (s *SettingService) GetPort() (int, error) {
 
 func (s *SettingService) SetPort(port int) error {
 	return s.setInt("webPort", port)
+}
+
+func (s *SettingService) GetDomain() (string, error) {
+	return s.getString("webDomain")
+}
+
+func (s *SettingService) GetHTTPSPort() (int, error) {
+	return s.getInt("webHTTPSPort")
 }
 
 func (s *SettingService) GetCertFile() (string, error) {

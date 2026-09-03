@@ -79,16 +79,19 @@ func (f *wrapAssetsFileInfo) ModTime() time.Time {
 }
 
 type Server struct {
-	httpServer *http.Server
-	listener   net.Listener
+	httpServer    *http.Server
+	httpsServer   *http.Server
+	listener      net.Listener
+	httpsListener net.Listener
 
 	index  *controller.IndexController
 	server *controller.ServerController
 	xui    *controller.XUIController
 
-	xrayService    service.XrayService
-	settingService service.SettingService
-	inboundService service.InboundService
+	xrayService        service.XrayService
+	settingService     service.SettingService
+	inboundService     service.InboundService
+	certificateService *service.CertificateService
 
 	cron *cron.Cron
 
@@ -99,8 +102,9 @@ type Server struct {
 func NewServer() *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		ctx:    ctx,
-		cancel: cancel,
+		ctx:                ctx,
+		cancel:             cancel,
+		certificateService: service.NewCertificateService(),
 	}
 }
 
@@ -232,7 +236,7 @@ func (s *Server) initRouter(tlsEnabled bool) (*gin.Engine, error) {
 
 	s.index = controller.NewIndexController(g)
 	s.server = controller.NewServerController(g)
-	s.xui = controller.NewXUIController(g)
+	s.xui = controller.NewXUIController(g, s.certificateService)
 
 	return engine, nil
 }
@@ -321,6 +325,19 @@ func (s *Server) startTask() {
 	if _, err := s.cron.AddJob("@every 30s", job.NewCheckInboundJob()); err != nil {
 		logger.Error("schedule inbound health check failed:", err)
 	}
+	certificateRenewJob := job.NewCertificateRenewJob(s.certificateService)
+	if _, err := s.cron.AddJob("@every 24h", certificateRenewJob); err != nil {
+		logger.Error("schedule certificate renewal failed:", err)
+	}
+	go func() {
+		timer := time.NewTimer(time.Minute)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			certificateRenewJob.Run()
+		case <-s.ctx.Done():
+		}
+	}()
 	// 每一天提示一次流量情况,上海时间8点30
 	var entry cron.EntryID
 	isTgbotenabled, err := s.settingService.GetTgbotenabled()
@@ -341,6 +358,16 @@ func (s *Server) startTask() {
 	}
 }
 
+func managedHTTPSRedirect(domain string, port int) http.Handler {
+	host := domain
+	if port != 443 {
+		host = net.JoinHostPort(domain, strconv.Itoa(port))
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusTemporaryRedirect) // #nosec G710 -- host is validated panel configuration, never the request Host.
+	})
+}
+
 func (s *Server) Start() (err error) {
 	//这是一个匿名函数，没没有函数名
 	defer func() {
@@ -358,19 +385,11 @@ func (s *Server) Start() (err error) {
 	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
 	s.cron.Start()
 
-	certFile, err := s.settingService.GetCertFile()
+	domain, err := s.settingService.GetDomain()
 	if err != nil {
 		return err
 	}
-	keyFile, err := s.settingService.GetKeyFile()
-	if err != nil {
-		return err
-	}
-	tlsEnabled := certFile != "" || keyFile != ""
-	if (certFile == "") != (keyFile == "") {
-		return common.NewError("TLS 证书和私钥必须同时配置")
-	}
-	engine, err := s.initRouter(tlsEnabled)
+	httpsPort, err := s.settingService.GetHTTPSPort()
 	if err != nil {
 		return err
 	}
@@ -382,12 +401,51 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	listenAddr := net.JoinHostPort(listen, strconv.Itoa(port))
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := net.Listen("tcp", net.JoinHostPort(listen, strconv.Itoa(port)))
 	if err != nil {
 		return err
 	}
-	if tlsEnabled {
+	s.listener = listener
+	s.certificateService.SetCurrentHTTPPort(port)
+
+	managedMode := strings.TrimSpace(domain) != ""
+	managedTLSActive := false
+	var managedCertificate *tls.Certificate
+	if managedMode {
+		managedCertificate, _, err = s.certificateService.ManagedCertificate()
+		if err == nil {
+			if httpsPort == port {
+				logger.Warning("managed HTTPS is disabled because HTTP and HTTPS ports are identical")
+			} else {
+				s.httpsListener, err = net.Listen("tcp", net.JoinHostPort(listen, strconv.Itoa(httpsPort)))
+				if err != nil {
+					logger.Warning("managed HTTPS listener is unavailable; keeping HTTP panel access:", err)
+				} else {
+					managedTLSActive = true
+					s.certificateService.SetCurrentHTTPSPort(httpsPort)
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			logger.Warning("managed certificate is unavailable; keeping HTTP panel access:", err)
+		}
+		if challengeErr := s.certificateService.EnsureChallengeServer(port); challengeErr != nil {
+			logger.Warning("ACME HTTP-01 challenge listener is unavailable:", challengeErr)
+		}
+	}
+
+	certFile, err := s.settingService.GetCertFile()
+	if err != nil {
+		return err
+	}
+	keyFile, err := s.settingService.GetKeyFile()
+	if err != nil {
+		return err
+	}
+	legacyTLS := !managedMode && (certFile != "" || keyFile != "")
+	if !managedMode && (certFile == "") != (keyFile == "") {
+		return common.NewError("TLS 证书和私钥必须同时配置")
+	}
+	if legacyTLS {
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
 			_ = listener.Close()
@@ -399,19 +457,35 @@ func (s *Server) Start() (err error) {
 		}
 		listener = network.NewAutoHttpsListener(listener)
 		listener = tls.NewListener(listener, c)
+		s.listener = listener
 	}
 
-	if tlsEnabled {
+	engine, err := s.initRouter(legacyTLS || managedTLSActive)
+	if err != nil {
+		return err
+	}
+
+	mainHandler := http.Handler(engine)
+	if managedMode {
+		if managedTLSActive {
+			mainHandler = managedHTTPSRedirect(domain, httpsPort)
+		}
+	}
+	// Keep the HTTP-01 route available even before a domain is saved. This is
+	// required when the panel itself already owns port 80 and the user applies
+	// for the first managed certificate without restarting first.
+	mainHandler = s.certificateService.HTTPChallengeHandler(mainHandler)
+
+	if legacyTLS {
 		logger.Info("web server run https on", listener.Addr())
 	} else {
 		logger.Info("web server run http on", listener.Addr())
 	}
-	s.listener = listener
 
 	s.startTask()
 
 	s.httpServer = &http.Server{
-		Handler:           engine,
+		Handler:           mainHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      2 * time.Minute,
@@ -424,6 +498,27 @@ func (s *Server) Start() (err error) {
 			logger.Error("web server failed:", err)
 		}
 	}()
+	if managedTLSActive {
+		tlsListener := tls.NewListener(s.httpsListener, &tls.Config{
+			Certificates: []tls.Certificate{*managedCertificate},
+			MinVersion:   tls.VersionTLS12,
+		})
+		s.httpsListener = tlsListener
+		s.httpsServer = &http.Server{
+			Handler:           s.certificateService.HTTPChallengeHandler(engine),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      2 * time.Minute,
+			IdleTimeout:       time.Minute,
+			MaxHeaderBytes:    1 << 20,
+		}
+		go func() {
+			logger.Info("managed web server run https on", tlsListener.Addr())
+			if err := s.httpsServer.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+				logger.Error("managed HTTPS web server failed:", err)
+			}
+		}()
+	}
 
 	return nil
 }
@@ -436,20 +531,33 @@ func (s *Server) Stop() error {
 	if s.cron != nil {
 		s.cron.Stop()
 	}
-	var err1 error
-	var err2 error
+	errs := make([]error, 0, 5)
 	if s.httpServer != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		err1 = s.httpServer.Shutdown(shutdownCtx)
+		errs = append(errs, s.httpServer.Shutdown(shutdownCtx))
+		cancel()
+	}
+	if s.httpsServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		errs = append(errs, s.httpsServer.Shutdown(shutdownCtx))
+		cancel()
 	}
 	if s.listener != nil {
-		err2 = s.listener.Close()
-		if errors.Is(err2, net.ErrClosed) {
-			err2 = nil
+		closeErr := s.listener.Close()
+		if !errors.Is(closeErr, net.ErrClosed) {
+			errs = append(errs, closeErr)
 		}
 	}
-	return common.Combine(err1, err2)
+	if s.httpsListener != nil {
+		closeErr := s.httpsListener.Close()
+		if !errors.Is(closeErr, net.ErrClosed) {
+			errs = append(errs, closeErr)
+		}
+	}
+	challengeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	errs = append(errs, s.certificateService.StopChallengeServer(challengeCtx))
+	cancel()
+	return common.Combine(errs...)
 }
 
 func (s *Server) GetCtx() context.Context {

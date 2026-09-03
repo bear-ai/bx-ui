@@ -2,6 +2,7 @@ package controller
 
 import (
 	"github.com/gin-gonic/gin"
+	"x-ui/web/service"
 )
 
 type XUIController struct {
@@ -11,13 +12,13 @@ type XUIController struct {
 	settingController *SettingController
 }
 
-func NewXUIController(g *gin.RouterGroup) *XUIController {
+func NewXUIController(g *gin.RouterGroup, certificateService *service.CertificateService) *XUIController {
 	a := &XUIController{}
-	a.initRouter(g)
+	a.initRouter(g, certificateService)
 	return a
 }
 
-func (a *XUIController) initRouter(g *gin.RouterGroup) {
+func (a *XUIController) initRouter(g *gin.RouterGroup, certificateService *service.CertificateService) {
 	g = g.Group("/xui")
 	g.Use(a.checkLogin)
 	g.Use(a.checkCSRF)
@@ -27,7 +28,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/setting", a.setting)
 
 	a.inboundController = NewInboundController(g)
-	a.settingController = NewSettingController(g)
+	a.settingController = NewSettingController(g, certificateService)
 }
 
 func (a *XUIController) index(c *gin.Context) {

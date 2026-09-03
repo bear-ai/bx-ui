@@ -29,6 +29,8 @@ type Pager struct {
 type AllSetting struct {
 	WebListen          string `json:"webListen" form:"webListen"`
 	WebPort            int    `json:"webPort" form:"webPort"`
+	WebDomain          string `json:"webDomain" form:"webDomain"`
+	WebHTTPSPort       int    `json:"webHTTPSPort" form:"webHTTPSPort"`
 	WebCertFile        string `json:"webCertFile" form:"webCertFile"`
 	WebKeyFile         string `json:"webKeyFile" form:"webKeyFile"`
 	WebBasePath        string `json:"webBasePath" form:"webBasePath"`
@@ -53,6 +55,21 @@ func (s *AllSetting) CheckValid() error {
 		return common.NewError("web port is not a valid port:", s.WebPort)
 	}
 
+	domain, err := serviceDomainName(s.WebDomain)
+	if err != nil {
+		return err
+	}
+	s.WebDomain = domain
+	if s.WebHTTPSPort <= 0 || s.WebHTTPSPort > 65535 {
+		return common.NewError("HTTPS port is not a valid port:", s.WebHTTPSPort)
+	}
+	if s.WebDomain != "" && s.WebPort == s.WebHTTPSPort {
+		return common.NewError("HTTP port and HTTPS port must be different")
+	}
+	if s.WebDomain != "" && s.WebHTTPSPort == 80 {
+		return common.NewError("HTTPS port 80 is reserved for ACME HTTP-01 validation")
+	}
+
 	if s.WebCertFile != "" || s.WebKeyFile != "" {
 		_, err := tls.LoadX509KeyPair(s.WebCertFile, s.WebKeyFile)
 		if err != nil {
@@ -68,7 +85,7 @@ func (s *AllSetting) CheckValid() error {
 	}
 
 	xrayConfig := &xray.Config{}
-	err := json.Unmarshal([]byte(s.XrayTemplateConfig), xrayConfig)
+	err = json.Unmarshal([]byte(s.XrayTemplateConfig), xrayConfig)
 	if err != nil {
 		return common.NewError("xray template config invalid:", err)
 	}
@@ -79,4 +96,28 @@ func (s *AllSetting) CheckValid() error {
 	}
 
 	return nil
+}
+
+// serviceDomainName performs the settings-layer checks which do not require
+// DNS or network access. CertificateService performs the full IDNA validation
+// again before contacting the ACME provider.
+func serviceDomainName(value string) (string, error) {
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	if domain == "" {
+		return "", nil
+	}
+	if len(domain) > 253 || !strings.Contains(domain, ".") || net.ParseIP(domain) != nil {
+		return "", common.NewError("panel domain is not a valid public domain:", value)
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", common.NewError("panel domain is not valid:", value)
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+				return "", common.NewError("panel domain must use ASCII or Punycode:", value)
+			}
+		}
+	}
+	return domain, nil
 }

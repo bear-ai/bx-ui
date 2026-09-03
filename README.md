@@ -12,8 +12,8 @@
 - 支持 VMess 全部客户端加密和 Shadowsocks AEAD/2022-blake3 全部加密方式
 - 流量统计，限制流量，限制到期时间
 - 可自定义 xray 配置模板
-- 支持 https 访问面板（自备域名 + ssl 证书）
-- 支持一键SSL证书申请且自动续签
+- 支持绑定面板域名并设置独立 HTTPS 端口
+- 支持 Let's Encrypt HTTP-01 一键申请证书，并在到期前 15 天自动续期
 - 更多高级配置项，详见面板
 
 > 新增协议、REALITY 和 VLESS Encryption 以 Xray v26.3.27 为兼容基线。MTProto、AmneziaWG 在 3x-ui 中由额外的 sidecar/自定义网络栈提供，并非 Xray 原生入站，因此本项目不提供不可运行的占位选项。
@@ -46,27 +46,16 @@ systemctl restart x-ui
 
 ## SSL证书申请
 
-> 此功能与教程由[FranzKafkaYu](https://github.com/FranzKafkaYu)提供
+面板设置页内置 Let's Encrypt 证书申请和续期功能：
 
-脚本内置SSL证书申请功能，使用该脚本申请证书，需满足以下条件:
+1. 填写“绑定域名”和“面板 HTTPS 端口”，保存配置。
+2. 将域名的 A/AAAA 记录解析到面板服务器。
+3. 确保公网 TCP 80 端口可直接访问本服务器，点击“检测解析和 80 端口”。
+4. 检测通过后点击“申请证书”。签发成功后面板会自动重启并启用 HTTPS。
 
-- 知晓Cloudflare 注册邮箱
-- 知晓Cloudflare Global API Key
-- 域名已通过cloudflare进行解析到当前服务器
+证书与私钥存放于 `/etc/x-ui/certs`，仅面板服务账户可读写。证书到期前 15 天会自动续期；续期失败时保留原证书并每天重试，不会覆盖仍可使用的证书。
 
-获取Cloudflare Global API Key的方法:
-    ![](media/bda84fbc2ede834deaba1c173a932223.png)
-    ![](media/d13ffd6a73f938d1037d0708e31433bf.png)
-
-使用时只需输入 `域名`, `邮箱`, `API KEY`即可，示意图如下：
-        ![](media/2022-04-04_141259.png)
-
-注意事项:
-
-- 该脚本使用DNS API进行证书申请
-- 默认使用Let'sEncrypt作为CA方
-- 证书安装目录为/root/cert目录
-- 本脚本申请证书均为泛域名证书
+本功能仅支持 ACME HTTP-01，不支持 DNS-01 和泛域名证书。若 80 端口被 Nginx、Caddy 等程序占用，需要先释放该端口。
 
 ## Tg机器人使用（开发中，暂不可使用）
 

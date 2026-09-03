@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
 	"time"
@@ -17,13 +18,14 @@ type updateUserForm struct {
 }
 
 type SettingController struct {
-	settingService service.SettingService
-	userService    service.UserService
-	panelService   service.PanelService
+	settingService     service.SettingService
+	userService        service.UserService
+	panelService       service.PanelService
+	certificateService *service.CertificateService
 }
 
-func NewSettingController(g *gin.RouterGroup) *SettingController {
-	a := &SettingController{}
+func NewSettingController(g *gin.RouterGroup, certificateService *service.CertificateService) *SettingController {
+	a := &SettingController{certificateService: certificateService}
 	a.initRouter(g)
 	return a
 }
@@ -35,6 +37,9 @@ func (a *SettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/update", a.updateSetting)
 	g.POST("/updateUser", a.updateUser)
 	g.POST("/restartPanel", a.restartPanel)
+	g.POST("/certificate/status", a.certificateStatus)
+	g.POST("/certificate/checkDomain", a.checkCertificateDomain)
+	g.POST("/certificate/apply", a.applyCertificate)
 }
 
 func (a *SettingController) getAllSetting(c *gin.Context) {
@@ -83,4 +88,24 @@ func (a *SettingController) updateUser(c *gin.Context) {
 func (a *SettingController) restartPanel(c *gin.Context) {
 	err := a.panelService.RestartPanel(time.Second * 3)
 	jsonMsg(c, "重启面板", err)
+}
+
+func (a *SettingController) certificateStatus(c *gin.Context) {
+	status, err := a.certificateService.GetStatus()
+	jsonObj(c, status, err)
+}
+
+func (a *SettingController) checkCertificateDomain(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
+	defer cancel()
+	status, err := a.certificateService.CheckDomain(ctx)
+	jsonObj(c, status, err)
+}
+
+func (a *SettingController) applyCertificate(c *gin.Context) {
+	result, err := a.certificateService.ApplyCertificate(c.Request.Context())
+	if err == nil && result != nil && result.RestartRequired {
+		err = a.panelService.RestartPanel(3 * time.Second)
+	}
+	jsonObj(c, result, err)
 }

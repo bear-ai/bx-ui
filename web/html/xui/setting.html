@@ -39,9 +39,39 @@
                         <a-tab-pane key="1" tab="面板配置">
                             <a-list item-layout="horizontal" style="background: white">
                                 <setting-list-item type="text" title="面板监听 IP" desc="默认留空监听所有 IP，重启面板生效" v-model="allSetting.webListen"></setting-list-item>
-                                <setting-list-item type="number" title="面板监听端口" desc="重启面板生效" v-model.number="allSetting.webPort"></setting-list-item>
-                                <setting-list-item type="text" title="面板证书公钥文件路径" desc="填写一个 '/' 开头的绝对路径，重启面板生效" v-model="allSetting.webCertFile"></setting-list-item>
-                                <setting-list-item type="text" title="面板证书密钥文件路径" desc="填写一个 '/' 开头的绝对路径，重启面板生效" v-model="allSetting.webKeyFile"></setting-list-item>
+                                <setting-list-item type="number" title="面板 HTTP 端口" desc="用于面板访问和 HTTPS 跳转；ACME HTTP-01 验证固定使用公网 80 端口" v-model.number="allSetting.webPort"></setting-list-item>
+                                <setting-list-item type="text" title="绑定域名" desc="填写完整域名并保存，然后将 A/AAAA 记录解析到本服务器" v-model.trim="allSetting.webDomain"></setting-list-item>
+                                <setting-list-item type="number" title="面板 HTTPS 端口" desc="证书申请成功后启用，不能与 HTTP 端口相同；重启面板生效" v-model.number="allSetting.webHTTPSPort"></setting-list-item>
+                                <a-list-item style="padding: 20px">
+                                    <a-alert type="info" show-icon style="width: 100%"
+                                             message="自动证书使用 Let's Encrypt HTTP-01"
+                                             description="请确保域名已解析到本服务器，且公网 TCP 80 端口可直接访问。本功能不支持 DNS-01；点击申请即表示同意 Let's Encrypt 服务条款。"></a-alert>
+                                </a-list-item>
+                                <a-list-item style="padding: 20px">
+                                    <a-row :gutter="16">
+                                        <a-col :lg="24" :xl="12">
+                                            <a-list-item-meta title="自动证书状态" :description="certificateStatus.message || '正在读取证书状态'"></a-list-item-meta>
+                                            <a-space direction="vertical" v-if="certificateStatus.state">
+                                                <span>状态：<a-tag :color="certificateStatusColor">[[ certificateStatusText ]]</a-tag></span>
+                                                <span v-if="certificateStatus.dnsAddresses && certificateStatus.dnsAddresses.length">解析地址：[[ certificateStatus.dnsAddresses.join(', ') ]]</span>
+                                                <span v-if="certificateStatus.issuer">签发机构：[[ certificateStatus.issuer ]]</span>
+                                                <span v-if="certificateStatus.expiresAt">到期时间：[[ certificateStatus.expiresAt ]]（剩余 [[ certificateStatus.daysRemaining ]] 天）</span>
+                                                <span v-if="certificateStatus.httpsUrl">HTTPS 地址：[[ certificateStatus.httpsUrl ]]</span>
+                                            </a-space>
+                                        </a-col>
+                                        <a-col :lg="24" :xl="12">
+                                            <a-space>
+                                                <a-button :disabled="!saveBtnDisable || !allSetting.webDomain"
+                                                          :loading="certificateChecking" @click="checkCertificateDomain">检测解析和 80 端口</a-button>
+                                                <a-button type="primary" :disabled="!saveBtnDisable || !allSetting.webDomain"
+                                                          :loading="certificateApplying" @click="applyCertificate">申请证书</a-button>
+                                            </a-space>
+                                            <p style="margin-top: 10px; color: #888">修改域名或端口后请先保存配置，再进行检测或申请。</p>
+                                        </a-col>
+                                    </a-row>
+                                </a-list-item>
+                                <setting-list-item type="text" title="手动证书公钥文件路径" desc="兼容旧配置；仅在未绑定自动证书域名时使用" v-model="allSetting.webCertFile"></setting-list-item>
+                                <setting-list-item type="text" title="手动证书密钥文件路径" desc="兼容旧配置；仅在未绑定自动证书域名时使用" v-model="allSetting.webKeyFile"></setting-list-item>
                                 <setting-list-item type="text" title="面板 url 根路径" desc="必须以 '/' 开头，以 '/' 结尾，重启面板生效" v-model="allSetting.webBasePath"></setting-list-item>
                             </a-list>
                         </a-tab-pane>
@@ -104,6 +134,31 @@
             allSetting: new AllSetting(),
             saveBtnDisable: true,
             user: {},
+            certificateStatus: {},
+            certificateChecking: false,
+            certificateApplying: false,
+        },
+        computed: {
+            certificateStatusColor() {
+                return {
+                    valid: 'green',
+                    expiring: 'orange',
+                    expired: 'red',
+                    invalid: 'red',
+                    pending: 'blue',
+                    unconfigured: 'default',
+                }[this.certificateStatus.state] || 'default';
+            },
+            certificateStatusText() {
+                return {
+                    valid: '有效',
+                    expiring: '即将续期',
+                    expired: '已过期',
+                    invalid: '无效',
+                    pending: '待申请',
+                    unconfigured: '未配置',
+                }[this.certificateStatus.state] || this.certificateStatus.state;
+            },
         },
         methods: {
             loading(spinning = true) {
@@ -135,6 +190,47 @@
                     this.user = {};
                 }
             },
+            async getCertificateStatus() {
+                const msg = await HttpUtil.post("/xui/setting/certificate/status");
+                if (msg.success) {
+                    this.certificateStatus = msg.obj || {};
+                }
+            },
+            async checkCertificateDomain() {
+                this.certificateChecking = true;
+                const msg = await HttpUtil.post("/xui/setting/certificate/checkDomain");
+                this.certificateChecking = false;
+                if (msg.success) {
+                    this.certificateStatus = msg.obj || {};
+                    this.$message.success('域名解析和公网 80 端口检测通过');
+                }
+            },
+            async applyCertificate() {
+                const confirmed = await new Promise(resolve => {
+                    this.$confirm({
+                        title: '申请自动证书',
+                        content: '请确认域名已经解析到本服务器，并已开放公网 TCP 80 端口。继续申请即表示同意 Let\'s Encrypt 服务条款。',
+                        okText: '申请证书',
+                        cancelText: '取消',
+                        onOk: () => resolve(true),
+                        onCancel: () => resolve(false),
+                    });
+                });
+                if (!confirmed || !this.allSetting.webDomain) {
+                    return;
+                }
+                this.certificateApplying = true;
+                const msg = await HttpUtil.post("/xui/setting/certificate/apply");
+                this.certificateApplying = false;
+                if (msg.success && msg.obj) {
+                    this.certificateStatus = msg.obj.status || {};
+                    if (msg.obj.restartRequired) {
+                        this.$message.success('证书签发成功，面板将在 3 秒后重启并启用 HTTPS');
+                    } else {
+                        this.$message.info('当前证书仍然有效，无需重复申请');
+                    }
+                }
+            },
             async restartPanel() {
                 await new Promise(resolve => {
                     this.$confirm({
@@ -157,6 +253,7 @@
         },
         async mounted() {
             await this.getAllSetting();
+            await this.getCertificateStatus();
             while (true) {
                 await PromiseUtil.sleep(1000);
                 this.saveBtnDisable = this.oldAllSetting.equals(this.allSetting);
