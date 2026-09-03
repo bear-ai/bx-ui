@@ -68,8 +68,8 @@ type Status struct {
 	} `json:"netTraffic"`
 }
 
-type Release struct {
-	TagName string `json:"tag_name"`
+type RepositoryTag struct {
+	Name string `json:"name"`
 }
 
 type ServerService struct {
@@ -199,20 +199,32 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 }
 
 func (s *ServerService) GetXrayVersions() ([]string, error) {
-	url := "https://api.github.com/repos/XTLS/Xray-core/releases"
-	data, err := getLimited(url, 2<<20)
+	// The releases endpoint includes every asset and release body, so its
+	// response can grow by megabytes even though this screen only needs tags.
+	url := "https://api.github.com/repos/XTLS/Xray-core/tags?per_page=100"
+	data, err := getLimited(url, 512<<10)
 	if err != nil {
 		return nil, err
 	}
+	return parseXrayVersions(data)
+}
 
-	releases := make([]Release, 0)
-	err = json.Unmarshal(data, &releases)
-	if err != nil {
+func parseXrayVersions(data []byte) ([]string, error) {
+	tags := make([]RepositoryTag, 0)
+	if err := json.Unmarshal(data, &tags); err != nil {
 		return nil, err
 	}
-	versions := make([]string, 0, len(releases))
-	for _, release := range releases {
-		versions = append(versions, release.TagName)
+	versions := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if !releaseVersionPattern.MatchString(tag.Name) {
+			continue
+		}
+		if _, exists := seen[tag.Name]; exists {
+			continue
+		}
+		seen[tag.Name] = struct{}{}
+		versions = append(versions, tag.Name)
 	}
 	return versions, nil
 }
