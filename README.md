@@ -45,29 +45,38 @@ systemctl restart x-ui
 
 ## 使用docker安装
 
-> 此 docker 教程与 docker 镜像由[Chasing66](https://github.com/Chasing66)提供
-
 1. 安装docker
 
 ```shell
 curl -fsSL https://get.docker.com | sh
 ```
 
-2. 安装x-ui
+2. 使用 bx-ui 官方镜像启动
 
 ```shell
 mkdir x-ui && cd x-ui
 docker run -itd --network=host \
     -v $PWD/db/:/etc/x-ui/ \
     -v $PWD/cert/:/root/cert/ \
-    --name x-ui --restart=unless-stopped \
-    enwaiax/x-ui:latest
+    --name bx-ui --restart=unless-stopped \
+    ghcr.io/bear-ai/bx-ui:latest
 ```
 
-> Build 自己的镜像
+镜像支持 `linux/amd64` 和 `linux/arm64`，每次推送到 `main` 后会自动构建最新版。
+
+也可以使用 Docker Compose：
 
 ```shell
-docker build -t x-ui .
+curl -fsSLO https://raw.githubusercontent.com/bear-ai/bx-ui/main/docker-compose.yml
+docker compose up -d
+```
+
+从源码构建本地镜像：
+
+```shell
+git clone https://github.com/bear-ai/bx-ui.git
+cd bx-ui
+docker build -t bx-ui .
 ```
 
 ## SSL证书申请

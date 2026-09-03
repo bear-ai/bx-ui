@@ -1,0 +1,9 @@
+services:
+  bx-ui:
+    image: ghcr.io/bear-ai/bx-ui:latest
+    container_name: bx-ui
+    network_mode: host
+    volumes:
+      - ./db:/etc/x-ui
+      - ./cert:/root/cert
+    restart: unless-stopped

@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+.vscode
+bin
+dist
+*.db
+*.log
+*.tar.gz
+*.sha256
+x-ui
