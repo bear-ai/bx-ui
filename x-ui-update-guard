@@ -1,0 +1,56 @@
+#!/bin/bash
+
+set -eu
+umask 077
+
+app_dir=${XUI_HOME:-/usr/local/x-ui}
+binary="${app_dir}/x-ui"
+previous="${binary}.previous"
+marker="${binary}.update-pending"
+
+write_state() {
+    state=$1
+    temp=$(mktemp "${app_dir}/.bx-ui-update-state.XXXXXX")
+    printf '%s\n' "${state}" > "${temp}"
+    chmod 0600 "${temp}"
+    mv -f -- "${temp}" "${marker}"
+}
+
+restore_previous() {
+    if [[ ! -f "${previous}" ]]; then
+        echo "bx-ui update rollback failed: previous binary is missing" >&2
+        return 1
+    fi
+    temp=$(mktemp "${app_dir}/.bx-ui-rollback.XXXXXX")
+    cp -- "${previous}" "${temp}"
+    chmod 0755 "${temp}"
+    mv -f -- "${temp}" "${binary}"
+    rm -f -- "${marker}"
+    echo "bx-ui update rolled back to the previous binary" >&2
+}
+
+case "${1:-}" in
+    pre)
+        [[ -f "${marker}" ]] || exit 0
+        state=$(head -n 1 "${marker}" 2>/dev/null || true)
+        if [[ "${state}" == "pending" ]]; then
+            write_state testing
+            exit 0
+        fi
+        restore_previous
+        ;;
+    post)
+        [[ -f "${marker}" ]] || exit 0
+        state=$(head -n 1 "${marker}" 2>/dev/null || true)
+        [[ "${state}" == "testing" ]] || exit 1
+        main_pid=${2:-}
+        [[ "${main_pid}" =~ ^[0-9]+$ ]] || exit 1
+        sleep 5
+        kill -0 "${main_pid}"
+        rm -f -- "${marker}"
+        ;;
+    *)
+        echo "usage: $0 {pre|post [main-pid]}" >&2
+        exit 2
+        ;;
+esac

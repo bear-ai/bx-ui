@@ -158,13 +158,16 @@ install_x-ui() {
 		chmod 0600 /etc/x-ui/x-ui.db
 	fi
     cd x-ui
-    chmod +x x-ui bin/xray-linux-${arch}
+    chmod +x x-ui x-ui-update-guard bin/xray-linux-${arch}
 	if ! getent group x-ui >/dev/null; then
 		groupadd --system x-ui
 	fi
 	if ! id -u x-ui >/dev/null 2>&1; then
 		useradd --system --gid x-ui --home-dir /nonexistent --shell /usr/sbin/nologin x-ui
 	fi
+	chown root:x-ui /usr/local/x-ui
+	chmod 0775 /usr/local/x-ui
+	chown root:x-ui /usr/local/x-ui/x-ui /usr/local/x-ui/x-ui.sh /usr/local/x-ui/x-ui-update-guard /usr/local/x-ui/x-ui.service
 	chown -R x-ui:x-ui /etc/x-ui /usr/local/x-ui/bin
     cp -f x-ui.service /etc/systemd/system/
 	install -m 0755 /usr/local/x-ui/x-ui.sh /usr/bin/x-ui
@@ -175,6 +178,9 @@ install_x-ui() {
     else
         echo -e "${green}现有面板配置已保留${plain}"
     fi
+	chown -R x-ui:x-ui /etc/x-ui
+	find /etc/x-ui -type d -exec chmod 0700 {} +
+	find /etc/x-ui -type f -exec chmod 0600 {} +
     systemctl daemon-reload
     systemctl enable x-ui
     systemctl start x-ui

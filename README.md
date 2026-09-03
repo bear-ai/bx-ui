@@ -5,6 +5,7 @@
 # 功能介绍
 
 - 系统状态监控
+- 显示面板版本，支持检查并在线更新面板
 - 支持多用户多协议，网页可视化操作
 - 支持 Xray 原生入站协议：vmess、vless、trojan、shadowsocks、dokodemo-door/tunnel、socks/mixed、http、wireguard、hysteria2、tun
 - 支持 tcp/raw、mKCP、WebSocket、gRPC、HTTPUpgrade、XHTTP、Hysteria 传输，以及 TLS、REALITY、VLESS Encryption
@@ -34,7 +35,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/bear-ai/bx-ui/main/install.sh)
 cd /root/
 rm x-ui/ /usr/local/x-ui/ /usr/bin/x-ui -rf
 tar zxvf x-ui-linux-amd64.tar.gz
-chmod +x x-ui/x-ui x-ui/bin/xray-linux-* x-ui/x-ui.sh
+chmod +x x-ui/x-ui x-ui/bin/xray-linux-* x-ui/x-ui.sh x-ui/x-ui-update-guard
 cp x-ui/x-ui.sh /usr/bin/x-ui
 cp -f x-ui/x-ui.service /etc/systemd/system/
 mv x-ui/ /usr/local/

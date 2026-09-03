@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"x-ui/config"
 	"x-ui/logger"
 	"x-ui/util/sys"
 	"x-ui/xray"
@@ -35,8 +36,11 @@ const (
 )
 
 type Status struct {
-	T   time.Time `json:"-"`
-	Cpu float64   `json:"cpu"`
+	T     time.Time `json:"-"`
+	Cpu   float64   `json:"cpu"`
+	Panel struct {
+		Version string `json:"version"`
+	} `json:"panel"`
 	Mem struct {
 		Current uint64 `json:"current"`
 		Total   uint64 `json:"total"`
@@ -105,6 +109,7 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	status := &Status{
 		T: now,
 	}
+	status.Panel.Version = config.GetVersion()
 
 	percents, err := cpu.Percent(0, false)
 	if err != nil {

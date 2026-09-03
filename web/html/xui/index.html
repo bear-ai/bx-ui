@@ -82,6 +82,17 @@
                     </a-col>
                     <a-col :sm="24" :md="12">
                         <a-card hoverable>
+                            面板版本:
+                            <a-tag color="green">[[ status.panel.version ]]</a-tag>
+                            <a-tag :color="panelUpdate.available ? 'orange' : 'blue'"
+                                   @click="checkPanelUpdate(true)">
+                                <a-icon v-if="panelUpdate.checking" type="loading"></a-icon>
+                                [[ panelUpdate.available ? '更新到 ' + panelUpdate.latest : '检查更新' ]]
+                            </a-tag>
+                        </a-card>
+                    </a-col>
+                    <a-col :sm="24" :md="12">
+                        <a-card hoverable>
                             运行时间:
                             <a-tag color="#87d068">[[ formatSecond(status.uptime) ]]</a-tag>
                             <a-tooltip>
@@ -225,6 +236,7 @@
             this.tcpCount = 0;
             this.udpCount = 0;
             this.uptime = 0;
+            this.panel = {version: ""};
             this.xray = {state: State.Stop, errorMsg: "", version: "", color: ""};
 
             if (data == null) {
@@ -240,6 +252,7 @@
             this.tcpCount = data.tcpCount;
             this.udpCount = data.udpCount;
             this.uptime = data.uptime;
+            this.panel = data.panel || {version: ""};
             this.xray = data.xray;
             switch (this.xray.state) {
                 case State.Running:
@@ -276,6 +289,11 @@
             siderDrawer,
             status: new Status(),
             versionModal,
+            panelUpdate: {
+                checking: false,
+                available: false,
+                latest: '',
+            },
             spinning: false,
             loadingTip: '加载中',
         },
@@ -316,8 +334,60 @@
                     },
                 });
             },
+            async checkPanelUpdate(showResult = false) {
+                if (this.panelUpdate.checking) {
+                    return;
+                }
+                this.panelUpdate.checking = true;
+                const msg = await HttpUtil.post('/server/checkPanelUpdate');
+                this.panelUpdate.checking = false;
+                if (!msg.success) {
+                    return;
+                }
+                this.panelUpdate.available = msg.obj.updateAvailable;
+                this.panelUpdate.latest = msg.obj.latestVersion;
+                if (!showResult) {
+                    return;
+                }
+                if (!this.panelUpdate.available) {
+                    this.$message.success('当前已经是最新版本');
+                    return;
+                }
+                this.confirmPanelUpdate();
+            },
+            confirmPanelUpdate() {
+                const latest = this.panelUpdate.latest;
+                this.$confirm({
+                    title: '在线更新面板',
+                    content: `确认将面板更新到 ${latest}？更新完成后面板会自动重启。`,
+                    okText: '更新',
+                    cancelText: '取消',
+                    onOk: async () => {
+                        this.loading(true, '正在下载并校验更新，请不要刷新此页面');
+                        const msg = await HttpUtil.post('/server/updatePanel');
+                        if (!msg.success) {
+                            this.loading(false);
+                            return;
+                        }
+                        this.loading(true, '面板正在重启');
+                        await PromiseUtil.sleep(3000);
+                        for (let i = 0; i < 30; ++i) {
+                            try {
+                                await axios.get(window.location.pathname, {timeout: 2000});
+                                window.location.reload();
+                                return;
+                            } catch (e) {
+                                await PromiseUtil.sleep(2000);
+                            }
+                        }
+                        this.loading(false);
+                        this.$message.warning('面板重启时间较长，请稍后手动刷新页面');
+                    },
+                });
+            },
         },
         async mounted() {
+            this.checkPanelUpdate(false);
             while (true) {
                 try {
                     await this.getStatus();

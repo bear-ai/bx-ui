@@ -14,6 +14,7 @@ type ServerController struct {
 
 	serverService service.ServerService
 	mu            sync.RWMutex
+	panelUpdateMu sync.Mutex
 
 	lastStatus        *service.Status
 	lastGetStatusTime time.Time
@@ -39,6 +40,8 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/status", a.status)
 	g.POST("/getXrayVersion", a.getXrayVersion)
 	g.POST("/installXray/:version", a.installXray)
+	g.POST("/checkPanelUpdate", a.checkPanelUpdate)
+	g.POST("/updatePanel", a.updatePanel)
 }
 
 func (a *ServerController) refreshStatus() {
@@ -103,4 +106,20 @@ func (a *ServerController) installXray(c *gin.Context) {
 	version := c.Param("version")
 	err := a.serverService.UpdateXray(version)
 	jsonMsg(c, "安装 xray", err)
+}
+
+func (a *ServerController) checkPanelUpdate(c *gin.Context) {
+	info, err := a.serverService.GetPanelUpdate()
+	jsonObj(c, info, err)
+}
+
+func (a *ServerController) updatePanel(c *gin.Context) {
+	a.panelUpdateMu.Lock()
+	defer a.panelUpdateMu.Unlock()
+
+	info, err := a.serverService.UpdatePanel()
+	jsonMsgObj(c, "更新面板", info, err)
+	if err == nil {
+		a.serverService.SchedulePanelRestart()
+	}
 }

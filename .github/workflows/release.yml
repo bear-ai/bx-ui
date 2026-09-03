@@ -60,6 +60,7 @@ jobs:
           mkdir -p "dist/x-ui/bin"
           install -m 755 bx-ui "dist/x-ui/x-ui"
           install -m 755 x-ui.sh "dist/x-ui/x-ui.sh"
+          install -m 755 x-ui-update-guard "dist/x-ui/x-ui-update-guard"
           install -m 755 install.sh "dist/x-ui/install.sh"
           install -m 644 x-ui.service "dist/x-ui/x-ui.service"
           curl --proto '=https' --tlsv1.2 -fL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}" -o xray.zip
