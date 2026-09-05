@@ -14,11 +14,11 @@ import (
 	"x-ui/config"
 	"x-ui/database"
 	"x-ui/logger"
-	"x-ui/util/tunsetup"
 	"x-ui/v2ui"
 	"x-ui/web"
 	"x-ui/web/global"
 	"x-ui/web/service"
+	"x-ui/xray"
 
 	"github.com/op/go-logging"
 )
@@ -261,8 +261,8 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    v2-ui          migrate form v2-ui")
 		fmt.Println("    setting        set settings")
-		fmt.Println("    tun enable     authorize TUN and restart (Linux root only)")
-		fmt.Println("    tun disable    revoke TUN authorization and restart (disable TUN inbounds first)")
+		fmt.Println("    tun enable     check TUN availability (root service needs no separate authorization)")
+		fmt.Println("    tun disable    show how to disable TUN inbounds in the panel")
 	}
 
 	flag.Parse()
@@ -274,14 +274,18 @@ func main() {
 	switch os.Args[1] {
 	case "tun":
 		if len(os.Args) != 3 || (os.Args[2] != "enable" && os.Args[2] != "disable") {
-			fmt.Fprintln(os.Stderr, "用法：x-ui tun enable|disable；撤销授权前请先停用所有 TUN 入站")
+			fmt.Fprintln(os.Stderr, "用法：x-ui tun enable|disable；新版默认 root 运行，不再设置单独的 TUN 授权")
 			os.Exit(2)
 		}
-		if err := tunsetup.Configure(os.Args[2] == "enable"); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+		if os.Args[2] == "enable" {
+			if err := xray.CheckTUNSupport(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			fmt.Println("当前进程具备 TUN 权限。新版服务默认 root 运行，无需单独授权；请在面板创建或启用 TUN 入站。此命令不修改服务配置、不重启面板。")
+		} else {
+			fmt.Println("请在面板停用或删除 TUN 入站。新版默认 root 运行，不再设置单独的 TUN 授权开关；此命令未修改配置，也未停止入站。")
 		}
-		fmt.Println("TUN 系统授权已更新，面板已重启；仍需自行配置 TUN 路由，不会自动接管服务器流量")
 	case "run":
 		err := runCmd.Parse(os.Args[2:])
 		if err != nil {

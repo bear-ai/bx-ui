@@ -13,7 +13,7 @@ import (
 // CheckTUNSupport checks access without creating, attaching to, or changing an
 // interface. In particular, never run a real TUN configuration as a preflight.
 func CheckTUNSupport() error {
-	const hint = "；请先由管理员执行 /usr/local/x-ui/x-ui tun enable（会重启面板），再重试"
+	const hint = "；新版默认以 root 运行。旧版在线更新不会更改服务账户，请用 root 运行新版安装脚本更新服务；若仍失败，请检查系统 TUN 设备及容器/服务权限限制"
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("TUN 设备不可访问：%w%s", err, hint)

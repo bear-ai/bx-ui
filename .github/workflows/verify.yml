@@ -41,8 +41,8 @@ jobs:
           go test -race ./...
           go vet ./...
 
-      - name: JavaScript model tests
-        run: node --test tests/xray_model_test.js
+      - name: JavaScript model and root installer tests
+        run: node --test tests/xray_model_test.js tests/root_install_test.js
 
       - name: Download and verify the supported Xray core
         env:
@@ -66,12 +66,12 @@ jobs:
           node --test tests/xray_config_integration_test.js
           go test ./xray -run TestInstalledXrayPreflight -v -count=1
 
-      - name: Exercise real TUN with the production systemd sandbox
+      - name: Exercise default root TUN and restricted-environment preflight
         run: |
           sudo modprobe tun
           test -c /dev/net/tun
           test -d /run/systemd/system
-          # PrivateTmp hides both /tmp and /var/tmp inside the service.
+          # Use a disposable runtime directory outside the source checkout.
           runtime_dir="$(sudo mktemp -d /run/bx-ui-tun-ci.XXXXXX)"
           trap 'sudo rm -f -- "$runtime_dir/xray.test" "$runtime_dir/xray"; sudo rmdir -- "$runtime_dir"' EXIT
           sudo chmod 755 "$runtime_dir"
@@ -79,4 +79,4 @@ jobs:
           sudo install -m 755 "${RUNNER_TEMP}/bx-ui-xray/xray.test" "$runtime_dir/xray.test"
           sudo install -m 755 "${RUNNER_TEMP}/bx-ui-xray/xray" "$runtime_dir/xray"
           sudo env BX_UI_TUN_RUNTIME=1 BX_UI_SOURCE_ROOT="$GITHUB_WORKSPACE" XRAY_TEST_BINARY="$runtime_dir/xray" \
-            "$runtime_dir/xray.test" -test.run '^TestTUNRuntimeSystemd$' -test.v -test.timeout 2m
+            "$runtime_dir/xray.test" -test.run '^TestTUNRuntimeSystemd$' -test.v -test.timeout 3m

@@ -22,47 +22,45 @@
 
 网页新增或编辑入站会先预检，并在新配置启动成功后才提交数据库；预检或启动立即失败时撤销本次保存，启动替换失败还会尝试恢复此前运行配置。页面会直接提示失败，不会把失败的新增/编辑留到下次重启。此保护不是持续连通性监测；较晚发生的运行故障仍需查看状态和日志。离线批量迁移只执行预检及事务导入，不启动 Xray。
 
-## TUN 入站权限
+## 默认 root 运行与 TUN
 
-TUN 与普通代理端口不同，需要 Linux `/dev/net/tun` 和 `CAP_NET_ADMIN`。默认服务不授予网络管理权限，在线更新也不会自动扩大权限。首次使用 TUN 时，先由 root 管理员执行（会重启面板，短暂中断连接）：
+安装和管理脚本由 root 执行，面板与 Xray 也默认以 root 运行，不再创建专用 `x-ui` 用户。程序及数据归 `root:root`，安装目录不向其他账户开放写权限；数据库、证书和私钥仍使用私密权限。服务不再使用此前的设备、文件系统及能力限制，便于使用证书、TUN 和系统网络功能。相应地，面板若被攻破会影响整个服务器，请妥善保护登录凭据并限制面板访问来源。
 
-```sh
-/usr/local/x-ui/x-ui tun enable
-```
-
-该命令为 systemd 写入独立的 `50-bx-ui-tun.conf` 授权配置，允许服务访问 TUN 设备并继承所需能力；面板仍以 `x-ui` 用户运行，其他沙箱限制保留。授权会增加面板及 Xray 的网络管理能力，仅在确实需要 TUN 时启用。命令内置在新版面板中，因此页面在线更新后即可使用，无需更新旧管理脚本。
-
-保存入站会检查权限；检查过程不会创建、附着或修改正在使用的 TUN 接口。若服务器没有 TUN 设备，需由管理员加载模块或联系提供商启用。接口路由由管理员自行配置，本项目不自动接管服务器默认路由。
-
-撤销前，先在面板停用所有 TUN 入站，再由 root 执行：
-
-```sh
-/usr/local/x-ui/x-ui tun disable
-```
-
-撤销仅删除本项目生成的授权文件并重启面板，不删除手工配置。若授权文件已被手工修改，命令会拒绝覆盖或删除。
+TUN 无需单独授权，但 Linux 必须提供 `/dev/net/tun` 和网络管理能力；容器或服务商禁止 TUN 时，仅切换 root 仍不能解除宿主限制。保存入站时保留无副作用检查，接口路由仍需自行配置，不自动接管服务器默认路由。停用 TUN 请在面板关闭或删除相应入站。旧 `tun enable` 命令仅检查当前进程权限，`tun disable` 仅显示操作指引，二者不再修改系统授权配置。
 
 # 安装&升级
+
+以 root 登录后执行：
 
 ```
 bash <(curl -Ls https://raw.githubusercontent.com/bear-ai/bx-ui/main/install.sh)
 ```
 
+从旧版专用账户服务迁移时，需执行一次上面的新版安装脚本，或使用经 SHA-256 校验的新安装包内的 `install.sh`。不要使用旧版菜单的 `x-ui update` 完成首次迁移，它可能仍执行旧安装逻辑。新脚本会更新 systemd 服务和文件所有者，保留数据库中的账号、端口、证书与入站设置。历史 `x-ui` 用户不再使用，但不会自动删除。旧版自动生成且未修改的 TUN 授权覆盖文件会被清理；遇到手工修改或符号链接时，脚本会在停止服务前中止并提示管理员处理，不覆盖自定义配置。
+
+注意：页面在线更新只替换面板程序，不会把已经运行的非 root 服务自动提升为 root。迁移后可继续使用页面在线更新。完整安装脚本会同时更新安装包内的 Xray 核心，与仅更新面板程序不同。
+
 ## 手动安装&升级
 
-1. 首先从 https://github.com/bear-ai/bx-ui/releases 下载最新的压缩包，一般选择 `amd64`架构
+下面仅适用于全新部署；旧服务迁移请使用上面的安装脚本，避免遗留 systemd 覆盖项。全程以 root 操作。
+
+1. 首先从 https://github.com/bear-ai/bx-ui/releases 下载最新的压缩包和对应 `.sha256` 文件，一般选择 `amd64`架构
 2. 然后将这个压缩包上传到服务器的 `/root/`目录下，并使用 `root`用户登录服务器
 
 > 如果你的服务器 cpu 架构不是 `amd64`，自行将命令中的 `amd64`替换为其他架构
 
 ```
 cd /root/
-rm x-ui/ /usr/local/x-ui/ /usr/bin/x-ui -rf
-tar zxvf x-ui-linux-amd64.tar.gz
+sha256sum -c x-ui-linux-amd64.tar.gz.sha256 || exit 1
+umask 077
+tar --no-same-owner --no-same-permissions -zxvf x-ui-linux-amd64.tar.gz || exit 1
+install -d -m 0755 /usr/local/x-ui
+install -d -m 0700 /etc/x-ui
 chmod +x x-ui/x-ui x-ui/bin/xray-linux-* x-ui/x-ui.sh x-ui/x-ui-update-guard
-cp x-ui/x-ui.sh /usr/bin/x-ui
-cp -f x-ui/x-ui.service /etc/systemd/system/
-mv x-ui/ /usr/local/
+cp -a x-ui/. /usr/local/x-ui/
+chown -R root:root /usr/local/x-ui /etc/x-ui
+install -o root -g root -m 0755 x-ui/x-ui.sh /usr/bin/x-ui
+install -o root -g root -m 0644 x-ui/x-ui.service /etc/systemd/system/x-ui.service
 systemctl daemon-reload
 systemctl enable x-ui
 systemctl restart x-ui
@@ -77,7 +75,7 @@ systemctl restart x-ui
 3. 确保公网 TCP 80 端口可直接访问本服务器，点击“检测解析和 80 端口”。
 4. 检测通过后点击“申请证书”。签发成功后面板会自动重启并启用 HTTPS。
 
-证书与私钥存放于 `/etc/x-ui/certs`，仅面板服务账户可读写。证书到期前 15 天会自动续期；续期失败时保留原证书并每天重试，不会覆盖仍可使用的证书。
+证书与私钥存放于 `/etc/x-ui/certs`，仅 root 可读写。证书到期前 15 天会自动续期；续期失败时保留原证书并每天重试，不会覆盖仍可使用的证书。
 
 本功能仅支持 ACME HTTP-01，不支持 DNS-01 和泛域名证书。若 80 端口被 Nginx、Caddy 等程序占用，需要先释放该端口。
 

@@ -6,28 +6,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 	"x-ui/util/json_util"
-	"x-ui/util/tunsetup"
 )
 
-// TestTUNRuntimeSystemd is deliberately opt-in. It needs root only to create two
-// transient systemd units. Both workers and the real core run as nobody inside
-// their own network namespace; host interfaces and production services are never
-// touched. A missing prerequisite is a failure when CI enables the test.
+// TestTUNRuntimeSystemd is deliberately opt-in for the test launcher. The default
+// production root service must support TUN without an opt-in drop-in. All workers
+// and the real core use private network namespaces; host interfaces and production
+// services are never touched. A missing prerequisite fails when CI enables it.
 func TestTUNRuntimeSystemd(t *testing.T) {
 	if os.Getenv("BX_UI_TUN_RUNTIME") != "1" {
 		t.Skip("requires explicit BX_UI_TUN_RUNTIME=1, root and systemd; executed by Linux CI")
@@ -44,34 +39,30 @@ func TestTUNRuntimeSystemd(t *testing.T) {
 	}
 	binary := os.Getenv("XRAY_TEST_BINARY")
 	if !filepath.IsAbs(binary) {
-		t.Fatal("XRAY_TEST_BINARY must be an absolute path accessible to nobody")
+		t.Fatal("XRAY_TEST_BINARY must be an absolute executable path")
 	}
 	testBinary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, tun := tunRuntimeServiceProperties(t, root)
-	for _, enabled := range []bool{false, true} {
-		mode := "denied"
-		if enabled {
-			mode = "enabled"
-		}
+	base := tunRuntimeServiceProperties(t, root)
+	for _, mode := range []string{"root-default", "denied-device", "denied-capabilities"} {
 		t.Run(mode, func(t *testing.T) {
-			properties := make(map[string]string, len(base)+len(tun))
+			properties := make(map[string]string, len(base)+6)
 			for key, value := range base {
 				properties[key] = value
 			}
-			if enabled {
-				for key, value := range tun {
-					properties[key] = value
-				}
+			// These two deliberately restricted variants verify that preflight
+			// still catches host/container restrictions even when UID is root.
+			if mode == "denied-device" {
+				properties["PrivateDevices"] = "true"
+			} else if mode == "denied-capabilities" {
+				properties["CapabilityBoundingSet"] = "CAP_NET_BIND_SERVICE"
+				properties["AmbientCapabilities"] = "CAP_NET_BIND_SERVICE"
 			}
-			// These differences relocate the same sandbox to a disposable worker.
-			// Its writable temporary directory is supplied by PrivateTmp=true.
-			properties["User"] = "nobody"
-			properties["Group"] = "nogroup"
+			// Only relocate and isolate the default service, preserving its
+			// checked-in user, capabilities and filesystem/device access rules.
 			properties["WorkingDirectory"] = "/tmp"
-			properties["ReadWritePaths"] = "/tmp"
 			properties["PrivateNetwork"] = "true"
 			properties["RuntimeMaxSec"] = "45s"
 			properties["TimeoutStopSec"] = "5s"
@@ -92,7 +83,7 @@ func TestTUNRuntimeSystemd(t *testing.T) {
 			defer cancel()
 			output, err := exec.CommandContext(ctx, "systemd-run", args...).CombinedOutput()
 			if err != nil {
-				t.Fatalf("%s production sandbox: %v\n%s", mode, err, output)
+				t.Fatalf("%s service: %v\n%s", mode, err, output)
 			}
 			t.Logf("%s", output)
 		})
@@ -104,33 +95,29 @@ func TestTUNRuntimeSandboxWorker(t *testing.T) {
 	if mode == "" {
 		t.Skip("launched only by TestTUNRuntimeSystemd")
 	}
-	if os.Geteuid() == 0 {
-		t.Fatal("TUN workers and Xray must run without root")
+	if os.Geteuid() != 0 || os.Getegid() != 0 {
+		t.Fatal("the production service must run as root:root")
 	}
 	before := tunRuntimeInterfaces(t)
 	if len(before) != 1 || before[0].Name != "lo" {
 		t.Fatalf("expected a private network namespace with only loopback, got %+v", before)
 	}
-	// A panel account must not be able to opt itself into system-wide privileges.
-	if err := tunsetup.Configure(true); err == nil || !strings.Contains(err.Error(), "Linux root") {
-		t.Fatalf("unprivileged TUN authorization was not rejected: %v", err)
-	}
-	if mode == "denied" {
+	if mode == "denied-device" || mode == "denied-capabilities" {
 		if err := CheckTUNSupport(); err == nil {
-			t.Fatal("default service sandbox unexpectedly permits TUN")
+			t.Fatal("deliberately restricted service unexpectedly permits TUN")
 		} else {
-			t.Logf("default sandbox rejects TUN before core startup: %v", err)
+			t.Logf("restricted root service rejects TUN before core startup: %v", err)
 		}
 		if after := tunRuntimeInterfaces(t); !reflect.DeepEqual(after, before) {
 			t.Fatalf("denied preflight changed interfaces: before=%+v after=%+v", before, after)
 		}
 		return
 	}
-	if mode != "enabled" {
+	if mode != "root-default" {
 		t.Fatalf("unknown worker mode %q", mode)
 	}
 	if err := CheckTUNSupport(); err != nil {
-		t.Fatalf("TUN opt-in does not work under the production sandbox: %v", err)
+		t.Fatalf("TUN does not work with the default production root service: %v", err)
 	}
 	if after := tunRuntimeInterfaces(t); !reflect.DeepEqual(after, before) {
 		t.Fatalf("permission check created or changed interfaces: before=%+v after=%+v", before, after)
@@ -138,6 +125,19 @@ func TestTUNRuntimeSandboxWorker(t *testing.T) {
 
 	binary := os.Getenv("XRAY_TEST_BINARY")
 	dir := t.TempDir()
+	// Root must retain its normal file access, not merely its UID. This models
+	// reading an existing private key or configuration owned by another account.
+	ownedPath := filepath.Join(dir, "other-owner-private-file")
+	const ownedContents = "isolated root access fixture"
+	if err := os.WriteFile(ownedPath, []byte(ownedContents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(ownedPath, 65534, 65534); err != nil {
+		t.Fatalf("default root service cannot change ownership of its test fixture: %v", err)
+	}
+	if got, err := os.ReadFile(ownedPath); err != nil || string(got) != ownedContents {
+		t.Fatalf("default root service cannot read another UID's mode-0600 file: %v", err)
+	}
 	config := &Config{
 		LogConfig: json_util.RawMessage(`{"loglevel":"info"}`),
 		InboundConfigs: []InboundConfig{{
@@ -234,7 +234,7 @@ func TestTUNRuntimeSandboxWorker(t *testing.T) {
 	if after := tunRuntimeInterfaces(t); !reflect.DeepEqual(after, before) {
 		t.Fatalf("Xray shutdown left or changed interfaces: before=%+v after=%+v", before, after)
 	}
-	t.Log("non-root Xray created and removed a real TUN; repeated preflight preserved its name, index, MTU and flags")
+	t.Log("default root Xray created and removed a real TUN without opt-in; repeated preflight preserved its name, index, MTU and flags")
 }
 
 func tunRuntimeInterfaces(t *testing.T) []net.Interface {
@@ -247,9 +247,9 @@ func tunRuntimeInterfaces(t *testing.T) []net.Interface {
 	return interfaces
 }
 
-// Read the checked-in unit and the actual administrator-managed drop-in, so the
-// runtime test cannot silently drift to a more permissive hand-written sandbox.
-func tunRuntimeServiceProperties(t *testing.T, root string) (map[string]string, map[string]string) {
+// Read the checked-in unit, so the runtime test cannot silently drift to a more
+// permissive hand-written service or depend on a legacy TUN opt-in drop-in.
+func tunRuntimeServiceProperties(t *testing.T, root string) map[string]string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, "x-ui.service"))
 	if err != nil {
@@ -282,28 +282,8 @@ func tunRuntimeServiceProperties(t *testing.T, root string) (map[string]string, 
 		return result
 	}
 	base := parse(string(data))
-	source, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, "util/tunsetup/setup.go"), nil, 0)
-	if err != nil {
-		t.Fatal(err)
+	if base["User"] != "root" || base["Group"] != "root" {
+		t.Fatal("production service must explicitly use User=root and Group=root")
 	}
-	var dropIn string
-	ast.Inspect(source, func(node ast.Node) bool {
-		spec, ok := node.(*ast.ValueSpec)
-		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "dropIn" || len(spec.Values) != 1 {
-			return true
-		}
-		literal, ok := spec.Values[0].(*ast.BasicLit)
-		if !ok || literal.Kind != token.STRING {
-			t.Fatal("TUN dropIn must be a string constant")
-		}
-		dropIn, err = strconv.Unquote(literal.Value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return false
-	})
-	if dropIn == "" || base["PrivateDevices"] != "true" {
-		t.Fatal("could not locate production TUN opt-in and default device sandbox")
-	}
-	return base, parse(dropIn)
+	return base
 }

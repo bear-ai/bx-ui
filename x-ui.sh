@@ -317,7 +317,7 @@ update_shell() {
 		LOGE "当前发布包缺少管理脚本"
 		before_show_menu
 	else
-		install -m 0755 /usr/local/x-ui/x-ui.sh /usr/bin/x-ui
+		install -o root -g root -m 0755 /usr/local/x-ui/x-ui.sh /usr/bin/x-ui
         LOGI "升级脚本成功，请重新运行脚本" && exit 0
     fi
 }

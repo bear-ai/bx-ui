@@ -5,8 +5,8 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=x-ui
-Group=x-ui
+User=root
+Group=root
 WorkingDirectory=/usr/local/x-ui/
 ExecStartPre=/usr/local/x-ui/x-ui-update-guard pre
 ExecStart=/usr/local/x-ui/x-ui
@@ -14,23 +14,6 @@ ExecStartPost=/usr/local/x-ui/x-ui-update-guard post $MAINPID
 Restart=always
 RestartSec=2s
 UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/etc/x-ui /usr/local/x-ui
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-RestrictSUIDSGID=true
-LockPersonality=true
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

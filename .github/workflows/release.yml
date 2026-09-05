@@ -73,7 +73,7 @@ jobs:
           test "$(sha256sum xray.zip | awk '{print $1}')" = "$(awk -F'= ' '/^SHA2-256=/{print $2}' xray.zip.dgst)"
           unzip -j xray.zip xray geoip.dat geosite.dat -d "dist/x-ui/bin"
           mv "dist/x-ui/bin/xray" "dist/x-ui/bin/xray-linux-${ARCH}"
-          tar -C dist -czf "x-ui-linux-${ARCH}.tar.gz" x-ui
+          tar --owner=0 --group=0 -C dist -czf "x-ui-linux-${ARCH}.tar.gz" x-ui
           sha256sum "x-ui-linux-${ARCH}.tar.gz" > "x-ui-linux-${ARCH}.tar.gz.sha256"
 
       - name: Upload package

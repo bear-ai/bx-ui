@@ -1,6 +1,6 @@
 {{define "form/tun"}}
 <a-form layout="inline">
-    <a-alert message="TUN 仅支持 Linux。首次使用需管理员执行 /usr/local/x-ui/x-ui tun enable（会重启面板）。在线更新不会自动扩大系统权限；保存时会检查权限。端口会被忽略，接口路由需自行配置。"
+    <a-alert message="TUN 仅支持 Linux。新版安装默认以 root 运行，无需单独授权；系统仍需提供 /dev/net/tun 和网络管理权限。旧版在线更新不会改变服务账户，需由 root 运行新版安装脚本完成迁移。端口会被忽略，接口路由需自行配置。"
              type="warning" show-icon style="margin-bottom: 12px"></a-alert>
     <a-form-item label="接口名">
         <a-input v-model.trim="inbound.settings.name" placeholder="xray0"></a-input>
