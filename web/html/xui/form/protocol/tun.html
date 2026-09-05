@@ -1,6 +1,6 @@
 {{define "form/tun"}}
 <a-form layout="inline">
-    <a-alert message="TUN 入站直接创建系统网络接口，端口字段会被 Xray 忽略；通常需要 root/CAP_NET_ADMIN。"
+    <a-alert message="TUN 仅支持 Linux。首次使用需管理员执行 /usr/local/x-ui/x-ui tun enable（会重启面板）。在线更新不会自动扩大系统权限；保存时会检查权限。端口会被忽略，接口路由需自行配置。"
              type="warning" show-icon style="margin-bottom: 12px"></a-alert>
     <a-form-item label="接口名">
         <a-input v-model.trim="inbound.settings.name" placeholder="xray0"></a-input>

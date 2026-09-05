@@ -1,6 +1,7 @@
 {{define "inboundModal"}}
 <a-modal id="inbound-modal" v-model="inModal.visible" :title="inModal.title" @ok="inModal.ok"
          :confirm-loading="inModal.confirmLoading" :closable="true" :mask-closable="false"
+         :ok-button-props="{props: {disabled: !!inModal.validationError}}"
          :ok-text="inModal.okText" cancel-text='{{ i18n "close" }}'>
     {{template "form/inbound"}}
 </a-modal>
@@ -14,7 +15,12 @@
         confirm: null,
         inbound: new Inbound(),
         dbInbound: new DBInbound(),
+        get validationError() {
+            const inbound = this.inbound;
+            return inbound.canEnableStream() && inbound.isXHttp ? inbound.stream.xhttp.advancedError : '';
+        },
         ok() {
+            if (inModal.validationError) return;
             ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
         },
         show({ title='', okText='确定', inbound=null, dbInbound=null, confirm=(inbound, dbInbound)=>{} }) {

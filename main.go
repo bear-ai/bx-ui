@@ -7,12 +7,14 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	_ "unsafe"
 	"x-ui/config"
 	"x-ui/database"
 	"x-ui/logger"
+	"x-ui/util/tunsetup"
 	"x-ui/v2ui"
 	"x-ui/web"
 	"x-ui/web/global"
@@ -259,6 +261,8 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    v2-ui          migrate form v2-ui")
 		fmt.Println("    setting        set settings")
+		fmt.Println("    tun enable     authorize TUN and restart (Linux root only)")
+		fmt.Println("    tun disable    revoke TUN authorization and restart (disable TUN inbounds first)")
 	}
 
 	flag.Parse()
@@ -268,6 +272,16 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "tun":
+		if len(os.Args) != 3 || (os.Args[2] != "enable" && os.Args[2] != "disable") {
+			fmt.Fprintln(os.Stderr, "用法：x-ui tun enable|disable；撤销授权前请先停用所有 TUN 入站")
+			os.Exit(2)
+		}
+		if err := tunsetup.Configure(os.Args[2] == "enable"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("TUN 系统授权已更新，面板已重启；仍需自行配置 TUN 路由，不会自动接管服务器流量")
 	case "run":
 		err := runCmd.Parse(os.Args[2:])
 		if err != nil {
@@ -278,6 +292,27 @@ func main() {
 	case "v2-ui":
 		err := v2uiCmd.Parse(os.Args[2:])
 		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		// Offline migration now validates with the installed core. Resolve the
+		// input before changing directory so a relative -db keeps its meaning.
+		dbPath, err = filepath.Abs(dbPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		executable, err = filepath.EvalSymlinks(executable)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		if err := os.Chdir(filepath.Dir(executable)); err != nil {
 			fmt.Println(err)
 			return
 		}

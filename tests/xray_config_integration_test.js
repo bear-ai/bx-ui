@@ -31,7 +31,7 @@ function runXray(args, input='') {
     return result.stdout;
 }
 
-function checkInbound(name, inbound, allowInterfacePermissionError=false) {
+function checkInbound(name, inbound) {
     const inboundConfig = JSON.parse(JSON.stringify(inbound.toJson()));
     if (!inboundConfig.listen) delete inboundConfig.listen;
     const config = {
@@ -42,10 +42,6 @@ function checkInbound(name, inbound, allowInterfacePermissionError=false) {
         input: JSON.stringify(config),
         encoding: 'utf8',
     });
-    if (allowInterfacePermissionError && result.status !== 0) {
-        assert.match(`${result.stdout}\n${result.stderr}`, /operation not permitted|permission denied/i);
-        return;
-    }
     assert.equal(result.status, 0, `${name}:\n${result.stdout}\n${result.stderr}`);
     assert.match(`${result.stdout}\n${result.stderr}`, /Configuration OK/);
 }
@@ -74,6 +70,17 @@ test('generated inbound configurations load in current Xray', {skip: !binary}, (
         inbound.stream.network = network;
         checkInbound(`vless/${network}`, inbound);
     }
+
+    const advancedXHTTP = new Inbound(undefined, undefined, Protocols.VLESS);
+    advancedXHTTP.stream.network = 'xhttp';
+    advancedXHTTP.stream.xhttp.advancedJSON = JSON.stringify({
+        extra: {xPaddingBytes: '100-1000', scMaxEachPostBytes: 1000000},
+    });
+    advancedXHTTP.stream.xhttp.headers = [{name: 'X-Bx-Compatibility', value: 'retained'}];
+    checkInbound('vless/xhttp/advanced', advancedXHTTP);
+    const restoredXHTTP = Inbound.fromJson(advancedXHTTP.toJson());
+    assert.equal(restoredXHTTP.toJson().streamSettings.xhttpSettings.extra.headers['X-Bx-Compatibility'], 'retained');
+    checkInbound('vless/xhttp/advanced-roundtrip', restoredXHTTP);
 
     const encOutput = runXray(['vlessenc']);
     const baseDecryptions = Array.from(encOutput.matchAll(/^\s*"decryption":\s*"([^"]+)"/gm), match => match[1]);
@@ -116,9 +123,21 @@ test('generated inbound configurations load in current Xray', {skip: !binary}, (
     hysteria.stream.tls.certs = [];
     checkInbound('hysteria', hysteria);
 
+});
+
+// Xray's configuration test creates a real TUN interface. Never run it on the
+// developer/runner host as part of ordinary model integration tests: Linux CI
+// exercises the real device in a separate, explicitly authorized namespace.
+test('generated TUN configuration loads in Xray', {
+    skip: !binary ? 'XRAY_TEST_BINARY is not set'
+        : process.env.XRAY_TEST_TUN_ISOLATED !== '1'
+            ? 'requires an isolated network namespace and TUN permission; covered by TestTUNRuntimeSystemd'
+            : false,
+}, () => {
+    const { Protocols, Inbound } = loadModel();
     const tun = new Inbound(undefined, undefined, Protocols.TUN);
     if (process.platform === 'darwin') tun.settings.name = 'utun9';
-    checkInbound('tun', tun, true);
+    checkInbound('tun', tun);
 });
 
 function contextSafePassword(method, inbound) {

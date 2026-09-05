@@ -9,6 +9,8 @@
 - 支持多用户多协议，网页可视化操作
 - 支持 Xray 原生入站协议：vmess、vless、trojan、shadowsocks、dokodemo-door/tunnel、socks/mixed、http、wireguard、hysteria2、tun
 - 支持 tcp/raw、mKCP、WebSocket、gRPC、HTTPUpgrade、XHTTP、Hysteria 传输，以及 TLS、REALITY、VLESS Encryption
+- 编辑入站保留未在表单中展示的高级配置字段，支持 XHTTP 高级 JSON 配置
+- 入站保存和 Xray 重启前进行配置预检，预检失败保留运行实例，启动立即失败时尝试恢复上一份运行配置
 - 支持 VMess 全部客户端加密和 Shadowsocks AEAD/2022-blake3 全部加密方式
 - 流量统计，限制流量，限制到期时间
 - 可自定义 xray 配置模板
@@ -17,6 +19,28 @@
 - 更多高级配置项，详见面板
 
 > 新增协议、REALITY 和 VLESS Encryption 以 Xray v26.3.27 为兼容基线。MTProto、AmneziaWG 在 3x-ui 中由额外的 sidecar/自定义网络栈提供，并非 Xray 原生入站，因此本项目不提供不可运行的占位选项。
+
+网页新增或编辑入站会先预检，并在新配置启动成功后才提交数据库；预检或启动立即失败时撤销本次保存，启动替换失败还会尝试恢复此前运行配置。页面会直接提示失败，不会把失败的新增/编辑留到下次重启。此保护不是持续连通性监测；较晚发生的运行故障仍需查看状态和日志。离线批量迁移只执行预检及事务导入，不启动 Xray。
+
+## TUN 入站权限
+
+TUN 与普通代理端口不同，需要 Linux `/dev/net/tun` 和 `CAP_NET_ADMIN`。默认服务不授予网络管理权限，在线更新也不会自动扩大权限。首次使用 TUN 时，先由 root 管理员执行（会重启面板，短暂中断连接）：
+
+```sh
+/usr/local/x-ui/x-ui tun enable
+```
+
+该命令为 systemd 写入独立的 `50-bx-ui-tun.conf` 授权配置，允许服务访问 TUN 设备并继承所需能力；面板仍以 `x-ui` 用户运行，其他沙箱限制保留。授权会增加面板及 Xray 的网络管理能力，仅在确实需要 TUN 时启用。命令内置在新版面板中，因此页面在线更新后即可使用，无需更新旧管理脚本。
+
+保存入站会检查权限；检查过程不会创建、附着或修改正在使用的 TUN 接口。若服务器没有 TUN 设备，需由管理员加载模块或联系提供商启用。接口路由由管理员自行配置，本项目不自动接管服务器默认路由。
+
+撤销前，先在面板停用所有 TUN 入站，再由 root 执行：
+
+```sh
+/usr/local/x-ui/x-ui tun disable
+```
+
+撤销仅删除本项目生成的授权文件并重启面板，不删除手工配置。若授权文件已被手工修改，命令会拒绝覆盖或删除。
 
 # 安装&升级
 

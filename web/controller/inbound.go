@@ -122,9 +122,6 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	inbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
 	err = a.inboundService.AddInbound(inbound)
 	jsonMsg(c, "添加", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
 }
 
 func (a *InboundController) delInbound(c *gin.Context) {
@@ -158,7 +155,4 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 	user := session.GetLoginUser(c)
 	err = a.inboundService.UpdateInbound(user.Id, inbound)
 	jsonMsg(c, "修改", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
 }

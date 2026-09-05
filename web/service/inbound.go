@@ -12,6 +12,93 @@ import (
 )
 
 type InboundService struct {
+	validateConfig func(*xray.Config) error
+	applyConfig    func(*xray.Config) error
+}
+
+// validateCandidates builds the exact proposed active configuration without
+// touching the database. Callers hold lock until the corresponding DB commit.
+func (s *InboundService) validateCandidates(candidates []*model.Inbound) (*xray.Config, error) {
+	all, err := s.GetAllInbounds()
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		found := false
+		for index, existing := range all {
+			if candidate.Id != 0 && candidate.Id == existing.Id {
+				all[index] = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			all = append(all, candidate)
+		}
+	}
+	service := &XrayService{}
+	config, err := service.configWithInbounds(all)
+	if err != nil {
+		return nil, err
+	}
+	validate := s.validateConfig
+	if validate == nil {
+		validate = xray.ValidateConfig
+	}
+	if err := validate(config); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+func (s *InboundService) applyPreparedConfig(config *xray.Config) error {
+	if p != nil && p.IsRunning() && p.GetConfig().Equals(config) {
+		return nil
+	}
+	if s.applyConfig != nil {
+		return s.applyConfig(config)
+	}
+	return (&XrayService{}).replaceProcess(config)
+}
+
+// saveAndApply keeps the database and runtime in agreement for interactive
+// changes. The caller holds lock, so another mutation/restart cannot interleave.
+func (s *InboundService) saveAndApply(config *xray.Config, save func(*gorm.DB) error) error {
+	var previous *xray.Config
+	if p != nil && p.IsRunning() {
+		previous = p.GetConfig()
+	}
+	applied := false
+	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := save(tx); err != nil {
+			return err
+		}
+		if err := s.applyPreparedConfig(config); err != nil {
+			// replaceProcess restores the old running instance on startup error;
+			// returning an error here also rolls back the candidate DB record.
+			return err
+		}
+		applied = true
+		return nil
+	})
+	if err == nil || !applied {
+		return err
+	}
+	// A successful process switch is not a successful save if COMMIT failed.
+	// Restore the exact pre-transaction running state as well as rolling back DB.
+	var restoreErr error
+	if previous != nil {
+		restoreErr = s.applyPreparedConfig(previous)
+	} else if p != nil && p.IsRunning() {
+		restoreErr = p.Stop()
+		if restoreErr == nil {
+			p = nil
+		}
+	}
+	if restoreErr != nil {
+		return common.NewError("保存入站失败，恢复原运行状态也失败，请检查内核运行日志")
+	}
+	return err
 }
 
 func (s *InboundService) GetInbounds(userId int) ([]*model.Inbound, error) {
@@ -49,6 +136,10 @@ func (s *InboundService) checkPortExist(port int, ignoreId int) (bool, error) {
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) error {
+	lock.Lock()
+	defer lock.Unlock()
+	// Creation must never turn a submitted primary key into an update.
+	inbound.Id = 0
 	exist, err := s.checkPortExist(inbound.Port, 0)
 	if err != nil {
 		return err
@@ -56,11 +147,16 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) error {
 	if exist {
 		return common.NewError("端口已存在:", inbound.Port)
 	}
-	db := database.GetDB()
-	return db.Save(inbound).Error
+	config, err := s.validateCandidates([]*model.Inbound{inbound})
+	if err != nil {
+		return err
+	}
+	return s.saveAndApply(config, func(tx *gorm.DB) error { return tx.Create(inbound).Error })
 }
 
 func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
+	lock.Lock()
+	defer lock.Unlock()
 	for _, inbound := range inbounds {
 		exist, err := s.checkPortExist(inbound.Port, 0)
 		if err != nil {
@@ -70,29 +166,24 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 			return common.NewError("端口已存在:", inbound.Port)
 		}
 	}
-
-	db := database.GetDB()
-	tx := db.Begin()
-	var err error
-	defer func() {
-		if err == nil {
-			tx.Commit()
-		} else {
-			tx.Rollback()
-		}
-	}()
-
-	for _, inbound := range inbounds {
-		err = tx.Save(inbound).Error
-		if err != nil {
-			return err
-		}
+	if _, err := s.validateCandidates(inbounds); err != nil {
+		return err
 	}
 
-	return nil
+	db := database.GetDB()
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, inbound := range inbounds {
+			if err := tx.Save(inbound).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *InboundService) DelInbound(id, userID int) error {
+	lock.Lock()
+	defer lock.Unlock()
 	db := database.GetDB()
 	result := db.Where("id = ? AND user_id = ?", id, userID).Delete(&model.Inbound{})
 	if result.Error != nil {
@@ -127,6 +218,8 @@ func (s *InboundService) GetInboundForUser(id, userID int) (*model.Inbound, erro
 }
 
 func (s *InboundService) UpdateInbound(userID int, inbound *model.Inbound) error {
+	lock.Lock()
+	defer lock.Unlock()
 	exist, err := s.checkPortExist(inbound.Port, inbound.Id)
 	if err != nil {
 		return err
@@ -155,9 +248,11 @@ func (s *InboundService) UpdateInbound(userID int, inbound *model.Inbound) error
 	oldInbound.StreamSettings = inbound.StreamSettings
 	oldInbound.Sniffing = inbound.Sniffing
 	oldInbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
-
-	db := database.GetDB()
-	return db.Save(oldInbound).Error
+	config, err := s.validateCandidates([]*model.Inbound{oldInbound})
+	if err != nil {
+		return err
+	}
+	return s.saveAndApply(config, func(tx *gorm.DB) error { return tx.Save(oldInbound).Error })
 }
 
 func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
@@ -189,6 +284,8 @@ func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
 }
 
 func (s *InboundService) DisableInvalidInbounds() (int64, error) {
+	lock.Lock()
+	defer lock.Unlock()
 	db := database.GetDB()
 	now := time.Now().Unix() * 1000
 	result := db.Model(model.Inbound{}).

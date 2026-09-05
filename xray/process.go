@@ -45,6 +45,22 @@ func GetGeoipPath() string {
 	return "bin/geoip.dat"
 }
 
+// Only the panel-generated configuration may be loaded. Xray otherwise merges
+// an inherited configuration directory even when an explicit -c is supplied.
+// The same environment is used for validation and the real running process.
+func coreEnvironment() []string {
+	environment := os.Environ()
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "XRAY_LOCATION_CONFDIR" || name == "xray.location.confdir" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
 func stopProcess(p *Process) {
 	_ = p.Stop()
 }
@@ -63,6 +79,7 @@ type process struct {
 	stateMu sync.RWMutex
 	running atomic.Bool
 	cmd     *exec.Cmd
+	done    chan struct{}
 
 	version string
 	apiPort int
@@ -129,9 +146,22 @@ func (p *process) refreshAPIPort() {
 }
 
 func (p *process) refreshVersion() {
+	p.refreshVersionFrom(GetBinaryPath())
+}
+
+func (p *process) refreshVersionFrom(binary string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	// #nosec G204 -- the executable path and argument are application constants.
-	cmd := exec.Command(GetBinaryPath(), "-version")
-	data, err := cmd.Output()
+	cmd := exec.CommandContext(ctx, binary, "-version")
+	cmd.Env = coreEnvironment()
+	cmd.WaitDelay = time.Second
+	output := &cappedOutput{}
+	cmd.Stdout, cmd.Stderr = output, output
+	err := cmd.Run()
+	data := output.Bytes()
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
 	if err != nil {
 		p.version = "Unknown"
 	} else {
@@ -145,6 +175,10 @@ func (p *process) refreshVersion() {
 }
 
 func (p *process) Start() (err error) {
+	return p.start(GetBinaryPath(), GetConfigPath())
+}
+
+func (p *process) start(binary, configPath string) (err error) {
 	if p.IsRunning() {
 		return errors.New("xray is already running")
 	}
@@ -161,7 +195,6 @@ func (p *process) Start() (err error) {
 	if err != nil {
 		return common.NewErrorf("生成 xray 配置文件失败: %v", err)
 	}
-	configPath := GetConfigPath()
 	err = os.WriteFile(configPath, data, 0600)
 	if err != nil {
 		return common.NewErrorf("写入配置文件失败: %v", err)
@@ -171,8 +204,14 @@ func (p *process) Start() (err error) {
 	}
 
 	// #nosec G204 -- the executable and config paths are application constants.
-	cmd := exec.Command(GetBinaryPath(), "-c", configPath)
+	cmd := exec.Command(binary, "-c", configPath)
+	cmd.Env = coreEnvironment()
+	done := make(chan struct{})
+	p.stateMu.Lock()
 	p.cmd = cmd
+	p.done = done
+	p.exitErr = nil
+	p.stateMu.Unlock()
 
 	stdReader, err := cmd.StdoutPipe()
 	if err != nil {
@@ -219,13 +258,14 @@ func (p *process) Start() (err error) {
 		}
 	}()
 
-	p.refreshVersion()
+	p.refreshVersionFrom(binary)
 	p.refreshAPIPort()
 	if err = cmd.Start(); err != nil {
 		return err
 	}
 	p.running.Store(true)
 	go func() {
+		defer close(done)
 		err := cmd.Wait()
 		p.stateMu.Lock()
 		if err != nil {
@@ -234,15 +274,35 @@ func (p *process) Start() (err error) {
 		p.stateMu.Unlock()
 		p.running.Store(false)
 	}()
-
-	return nil
+	// Most constructor, bind and permission failures occur immediately. Wait
+	// briefly so a failed replacement can restore the previous process rather
+	// than reporting success merely because exec.Start succeeded.
+	select {
+	case <-done:
+		return errors.New("Xray 启动后立即退出，请检查配置、端口占用及系统权限")
+	case <-time.After(time.Second):
+		return nil
+	}
 }
 
 func (p *process) Stop() error {
 	if !p.IsRunning() {
 		return errors.New("xray is not running")
 	}
-	return p.cmd.Process.Kill()
+	p.stateMu.RLock()
+	cmd, done := p.cmd, p.done
+	p.stateMu.RUnlock()
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	// In particular, TUN file descriptors must be released before a new core
+	// attempts to claim the same interface name.
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return errors.New("等待 Xray 退出超时")
+	}
 }
 
 func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {

@@ -3,14 +3,27 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
+	"x-ui/database/model"
 	"x-ui/logger"
 	"x-ui/xray"
 
 	"go.uber.org/atomic"
 )
 
-var p *xray.Process
+type xrayProcess interface {
+	IsRunning() bool
+	GetErr() error
+	GetResult() string
+	GetVersion() string
+	GetConfig() *xray.Config
+	GetTraffic(bool) ([]*xray.Traffic, error)
+	Start() error
+	Stop() error
+}
+
+var p xrayProcess
 var lock sync.RWMutex
 var isNeedXrayRestart atomic.Bool
 var result string
@@ -18,6 +31,8 @@ var result string
 type XrayService struct {
 	inboundService InboundService
 	settingService SettingService
+	validateConfig func(*xray.Config) error
+	newProcess     func(*xray.Config) xrayProcess
 }
 
 func (s *XrayService) IsXrayRunning() bool {
@@ -61,6 +76,14 @@ func (s *XrayService) GetXrayVersion() string {
 }
 
 func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
+	inbounds, err := s.inboundService.GetAllInbounds()
+	if err != nil {
+		return nil, err
+	}
+	return s.configWithInbounds(inbounds)
+}
+
+func (s *XrayService) configWithInbounds(inbounds []*model.Inbound) (*xray.Config, error) {
 	templateConfig, err := s.settingService.GetXrayConfigTemplate()
 	if err != nil {
 		return nil, err
@@ -72,10 +95,6 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		return nil, err
 	}
 
-	inbounds, err := s.inboundService.GetAllInbounds()
-	if err != nil {
-		return nil, err
-	}
 	for _, inbound := range inbounds {
 		if !inbound.Enable {
 			continue
@@ -105,19 +124,45 @@ func (s *XrayService) RestartXray(isForce bool) error {
 		return err
 	}
 
+	if p != nil && p.IsRunning() && !isForce && p.GetConfig().Equals(xrayConfig) {
+		logger.Debug("not need to restart xray")
+		return nil
+	}
+	validate := s.validateConfig
+	if validate == nil {
+		validate = xray.ValidateConfig
+	}
+	if err := validate(xrayConfig); err != nil {
+		return err
+	}
+	return s.replaceProcess(xrayConfig)
+}
+
+func (s *XrayService) replaceProcess(config *xray.Config) error {
+	create := s.newProcess
+	if create == nil {
+		create = func(config *xray.Config) xrayProcess { return xray.NewProcess(config) }
+	}
+	var previous *xray.Config
 	if p != nil && p.IsRunning() {
-		if !isForce && p.GetConfig().Equals(xrayConfig) {
-			logger.Debug("not need to restart xray")
-			return nil
-		}
+		previous = p.GetConfig()
 		if err := p.Stop(); err != nil {
-			logger.Warning("stop old xray process failed:", err)
+			return fmt.Errorf("停止旧 Xray 实例失败，已取消配置切换: %w", err)
 		}
 	}
-
-	p = xray.NewProcess(xrayConfig)
+	p = create(config)
 	result = ""
-	return p.Start()
+	if err := p.Start(); err != nil {
+		if previous == nil {
+			return err
+		}
+		p = create(previous)
+		if restoreErr := p.Start(); restoreErr != nil {
+			return errors.New("新 Xray 配置启动失败，恢复旧配置也失败，请检查内核运行日志")
+		}
+		return errors.New("新 Xray 配置启动失败，已恢复运行中的旧配置，请检查端口占用和系统权限")
+	}
+	return nil
 }
 
 func (s *XrayService) StopXray() error {

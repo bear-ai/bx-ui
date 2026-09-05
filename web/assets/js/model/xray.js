@@ -58,6 +58,39 @@ Object.freeze(RULE_IP);
 Object.freeze(RULE_DOMAIN);
 Object.freeze(FLOW_CONTROL);
 
+// Keep fields not exposed by the form on the model that owns them, never on an
+// array index or on the parent inbound. Deleting a client or changing protocol
+// therefore cannot resurrect old settings. WeakMap also keeps this metadata out
+// of Vue's data and out of serialized Xray configuration.
+const xrayUnknownFields = new WeakMap();
+
+function preserveXrayFields(modelClass, managedFields=[]) {
+    const deserialize = modelClass.fromJson;
+    const serialize = modelClass.prototype.toJson;
+    modelClass.fromJson = function(json, ...args) {
+        const result = deserialize.call(this, json, ...args);
+        const retain = (model, source) => {
+            const extra = {...(source || {})};
+            for (const key of [...Object.keys(serialize.call(model)), ...managedFields]) {
+                delete extra[key];
+            }
+            xrayUnknownFields.set(model, JSON.parse(JSON.stringify(extra)));
+        };
+        if (Array.isArray(result)) {
+            result.forEach((model, index) => retain(model, json[index]));
+        } else {
+            retain(result, json);
+        }
+        return result;
+    };
+    modelClass.prototype.toJson = function() {
+        return {
+            ...JSON.parse(JSON.stringify(xrayUnknownFields.get(this) || {})),
+            ...serialize.call(this),
+        };
+    };
+}
+
 class XrayCommonClass {
 
     static toJsonArray(arr) {
@@ -94,7 +127,8 @@ class XrayCommonClass {
     }
 
     static toV2Headers(headers, arr=true) {
-        let v2Headers = {};
+        // Header names are user-controlled, including names on Object.prototype.
+        let v2Headers = Object.create(null);
         for (let i = 0; i < headers.length; ++i) {
             let name = headers[i].name;
             let value = headers[i].value;
@@ -126,6 +160,7 @@ class TcpStreamSettings extends XrayCommonClass {
         this.type = type;
         this.request = request;
         this.response = response;
+        this.headerExtra = {};
     }
 
     static fromJson(json={}) {
@@ -133,17 +168,21 @@ class TcpStreamSettings extends XrayCommonClass {
         if (!header) {
             header = {};
         }
-        return new TcpStreamSettings(json.acceptProxyProtocol,
+        const settings = new TcpStreamSettings(json.acceptProxyProtocol,
             header.type,
             TcpStreamSettings.TcpRequest.fromJson(header.request),
             TcpStreamSettings.TcpResponse.fromJson(header.response),
         );
+        settings.headerExtra = JSON.parse(JSON.stringify(header));
+        for (const key of ['type', 'request', 'response']) delete settings.headerExtra[key];
+        return settings;
     }
 
     toJson() {
         return {
             acceptProxyProtocol: this.acceptProxyProtocol,
             header: {
+                ...this.headerExtra,
                 type: this.type,
                 request: this.type === 'http' ? this.request.toJson() : undefined,
                 response: this.type === 'http' ? this.response.toJson() : undefined,
@@ -201,6 +240,7 @@ TcpStreamSettings.TcpRequest = class extends XrayCommonClass {
 
     toJson() {
         return {
+            version: this.version,
             method: this.method,
             path: ObjectUtil.clone(this.path),
             headers: XrayCommonClass.toV2Headers(this.headers),
@@ -379,14 +419,18 @@ class QuicStreamSettings extends XrayCommonClass {
         this.security = security;
         this.key = key;
         this.type = type;
+        this.headerExtra = {};
     }
 
     static fromJson(json={}) {
-        return new QuicStreamSettings(
+        const settings = new QuicStreamSettings(
             json.security,
             json.key,
             json.header ? json.header.type : 'none',
         );
+        settings.headerExtra = {...json.header};
+        delete settings.headerExtra.type;
+        return settings;
     }
 
     toJson() {
@@ -394,6 +438,7 @@ class QuicStreamSettings extends XrayCommonClass {
             security: this.security,
             key: this.key,
             header: {
+                ...this.headerExtra,
                 type: this.type,
             }
         }
@@ -458,12 +503,13 @@ class HttpUpgradeStreamSettings extends XrayCommonClass {
 }
 
 class XHttpStreamSettings extends XrayCommonClass {
-    constructor(host='', path='/', mode='auto', headers=[]) {
+    constructor(host='', path='/', mode='auto', headers=[], advanced={}) {
         super();
         this.host = host;
         this.path = path;
         this.mode = mode;
         this.headers = headers;
+        this.advancedJSON = JSON.stringify(advanced, null, 2);
     }
 
     addHeader(name='', value='') {
@@ -475,20 +521,71 @@ class XHttpStreamSettings extends XrayCommonClass {
     }
 
     static fromJson(json={}) {
+        const advanced = JSON.parse(JSON.stringify(json));
+        for (const key of ['host', 'path', 'mode', 'headers']) delete advanced[key];
+        let headers = json.headers;
+        // Xray uses extra in place of all root options except host/path/mode.
+        // Move its effective headers into the form, then write them back there.
+        if (Object.prototype.hasOwnProperty.call(advanced, 'extra')) {
+            if (advanced.extra === null) advanced.extra = {};
+            headers = advanced.extra.headers;
+            delete advanced.extra.headers;
+        }
         return new XHttpStreamSettings(
             json.host || '',
             json.path || '/',
             json.mode || 'auto',
-            XrayCommonClass.toHeaders(json.headers),
+            XrayCommonClass.toHeaders(headers),
+            advanced,
         );
     }
 
+    parseAdvancedJSON() {
+        let advanced;
+        try {
+            advanced = JSON.parse(this.advancedJSON.trim() || '{}');
+        } catch (_) {
+            throw new Error('XHTTP 高级配置不是有效的 JSON，请检查引号、逗号和括号');
+        }
+        if (advanced === null || typeof advanced !== 'object' || Array.isArray(advanced)) {
+            throw new Error('XHTTP 高级配置必须是 JSON 对象，例如 {"extra":{"xPaddingBytes":"100-1000"}}');
+        }
+        for (const key of ['host', 'path', 'mode', 'headers']) {
+            if (Object.prototype.hasOwnProperty.call(advanced, key)) {
+                throw new Error('请在上方表单设置 ' + key + '，不要在高级配置中重复填写');
+            }
+        }
+        if (Object.prototype.hasOwnProperty.call(advanced, 'extra') &&
+            (advanced.extra === null || typeof advanced.extra !== 'object' || Array.isArray(advanced.extra))) {
+            throw new Error('XHTTP extra 必须是 JSON 对象');
+        }
+        if (advanced.extra && Object.prototype.hasOwnProperty.call(advanced.extra, 'headers')) {
+            throw new Error('请在上方表单设置 headers，不要在 extra 中重复填写');
+        }
+        return advanced;
+    }
+
+    get advancedError() {
+        try {
+            this.parseAdvancedJSON();
+            return '';
+        } catch (error) {
+            return error.message;
+        }
+    }
+
     toJson() {
+        const advanced = this.parseAdvancedJSON();
+        const headers = XrayCommonClass.toV2Headers(this.headers, false);
+        if (advanced.extra) {
+            advanced.extra = {...advanced.extra, headers: Object.keys(headers).length ? headers : undefined};
+        }
         return {
+            ...advanced,
             host: this.host,
             path: this.path,
             mode: this.mode,
-            headers: XrayCommonClass.toV2Headers(this.headers, false),
+            headers: advanced.extra ? undefined : headers,
         };
     }
 }
@@ -573,7 +670,7 @@ TlsStreamSettings.Cert = class extends XrayCommonClass {
     }
 
     static fromJson(json={}) {
-        if ('certificateFile' in json && 'keyFile' in json) {
+        if ('certificateFile' in json || 'keyFile' in json) {
             return new TlsStreamSettings.Cert(
                 true,
                 json.certificateFile,
@@ -582,8 +679,8 @@ TlsStreamSettings.Cert = class extends XrayCommonClass {
         } else {
             return new TlsStreamSettings.Cert(
                 false, '', '',
-                json.certificate.join('\n'),
-                json.key.join('\n'),
+                (json.certificate || []).join('\n'),
+                (json.key || []).join('\n'),
             );
         }
     }
@@ -750,10 +847,10 @@ class StreamSettings extends XrayCommonClass {
             tls = TlsStreamSettings.fromJson(json.tlsSettings);
         }
         return new StreamSettings(
-            json.network,
+            json.network === 'raw' ? 'tcp' : json.network === 'splithttp' ? 'xhttp' : json.network,
             json.security,
             tls,
-            TcpStreamSettings.fromJson(json.tcpSettings),
+            TcpStreamSettings.fromJson(json.rawSettings || json.tcpSettings),
             KcpStreamSettings.fromJson(json.kcpSettings),
             WsStreamSettings.fromJson(json.wsSettings),
             HttpStreamSettings.fromJson(json.httpSettings),
@@ -2106,3 +2203,25 @@ Inbound.TunSettings = class extends Inbound.Settings {
         };
     }
 };
+
+// Every concrete model owns only its form fields; the rest must survive an edit.
+// Keys that are intentionally omitted (or canonicalized aliases) are managed too.
+[
+    TcpStreamSettings, TcpStreamSettings.TcpRequest, TcpStreamSettings.TcpResponse,
+    KcpStreamSettings, WsStreamSettings, HttpStreamSettings, QuicStreamSettings,
+    GrpcStreamSettings, HttpUpgradeStreamSettings, HysteriaStreamSettings,
+    TlsStreamSettings, Sniffing, Inbound,
+    Inbound.VmessSettings, Inbound.VmessSettings.Vmess,
+    Inbound.VLESSSettings, Inbound.VLESSSettings.VLESS, Inbound.VLESSSettings.Fallback,
+    Inbound.TrojanSettings, Inbound.TrojanSettings.Client, Inbound.TrojanSettings.Fallback,
+    Inbound.ShadowsocksSettings, Inbound.DokodemoSettings,
+    Inbound.MtprotoSettings, Inbound.MtprotoSettings.MtUser,
+    Inbound.SocksSettings, Inbound.SocksSettings.SocksAccount,
+    Inbound.HttpSettings, Inbound.HttpSettings.HttpAccount,
+    Inbound.WireGuardSettings, Inbound.WireGuardSettings.Peer,
+    Inbound.HysteriaSettings, Inbound.HysteriaSettings.Client,
+].forEach(modelClass => preserveXrayFields(modelClass));
+preserveXrayFields(StreamSettings, ['rawSettings', 'splithttpSettings']);
+preserveXrayFields(TlsStreamSettings.Cert, ['certificateFile', 'keyFile', 'certificate', 'key']);
+preserveXrayFields(RealityStreamSettings, ['dest', 'maxTimediff', 'settings']);
+preserveXrayFields(Inbound.TunSettings, ['mtu']);

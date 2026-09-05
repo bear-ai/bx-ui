@@ -19,4 +19,13 @@
         </a-input-group>
     </a-form-item>
 </a-form>
+<a-form layout="vertical">
+    <a-form-item label="XHTTP 高级配置（JSON）"
+                 :validate-status="inbound.stream.xhttp.advancedError ? 'error' : ''"
+                 :help="inbound.stream.xhttp.advancedError || '支持 extra、xPaddingBytes 等 Xray 参数；留空或 {} 清除高级配置，Host、路径、模式和请求头请在上方设置。'">
+        <a-textarea v-model="inbound.stream.xhttp.advancedJSON" :rows="7"
+                    placeholder='{"extra":{"xPaddingBytes":"100-1000"}}'
+                    spellcheck="false"></a-textarea>
+    </a-form-item>
+</a-form>
 {{end}}
