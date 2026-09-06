@@ -41,8 +41,8 @@ jobs:
           go test -race ./...
           go vet ./...
 
-      - name: JavaScript model and root installer tests
-        run: node --test tests/xray_model_test.js tests/root_install_test.js
+      - name: JavaScript model and installer tests
+        run: node --test tests/xray_model_test.js tests/root_install_test.js tests/password_install_test.js
 
       - name: Download and verify the supported Xray core
         env:

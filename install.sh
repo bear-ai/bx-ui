@@ -152,21 +152,65 @@ migrate_legacy_tun_dropin() {
     echo "已移除旧版自动生成的 TUN 权限配置，面板和 Xray 将使用 root 运行。"
 }
 
-#This function will be called when user installed x-ui out of sercurity
+# Keep this helper in sync with x-ui.sh. The binary owns the character/byte
+# policy so Unicode passwords are checked identically in every entry point.
+read_account_password() {
+    local validation_status
+    while true; do
+        if ! IFS= read -rsp "请输入新密码（至少 8 个字符，UTF-8 编码后最多 72 字节）: " config_password; then
+            echo >&2
+            config_password=
+            echo "输入已结束，已取消密码设置。" >&2
+            return 1
+        fi
+        echo >&2
+        if printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -validate-password -password-stdin; then
+            return 0
+        else
+            validation_status=$?
+        fi
+        config_password=
+        if [[ ${validation_status} -ne 1 ]]; then
+            echo "无法校验密码，请确认面板程序与安装脚本版本一致，已停止设置。" >&2
+            return 1
+        fi
+        echo "密码不符合要求，请重新输入。" >&2
+    done
+}
+
+# Configure the first installation without reporting a failed setting as saved.
 config_after_install() {
+    local config_confirm config_account config_password config_port
     echo -e "${yellow}出于安全考虑，安装/更新完成后需要强制修改端口与账户密码${plain}"
-    read -p "确认是否继续?[y/n]": config_confirm
+    if ! IFS= read -rp "确认是否继续?[y/n]: " config_confirm; then
+        echo "输入已结束，已取消账户配置。" >&2
+        return 1
+    fi
     if [[ x"${config_confirm}" == x"y" || x"${config_confirm}" == x"Y" ]]; then
-        read -p "请设置您的账户名:" config_account
+        if ! read -rp "请设置您的账户名:" config_account; then
+            echo "输入已结束，已取消账户配置。" >&2
+            return 1
+        fi
         echo -e "${yellow}您的账户名将设定为:${config_account}${plain}"
-		read -rsp "请设置您的账户密码:" config_password
-		echo
-        read -p "请设置面板访问端口:" config_port
+        read_account_password || return 1
+        if ! IFS= read -rp "请设置面板访问端口:" config_port; then
+            config_password=
+            echo "输入已结束，已取消账户配置。" >&2
+            return 1
+        fi
         echo -e "${yellow}您的面板访问端口将设定为:${config_port}${plain}"
         echo -e "${yellow}确认设定,设定中${plain}"
-		printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -username "${config_account}" -password-stdin
+        if ! printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -username "${config_account}" -password-stdin; then
+            config_password=
+            echo "账户密码设置失败，已停止安装配置，请检查错误后重试。" >&2
+            return 1
+        fi
+        config_password=
         echo -e "${yellow}账户密码设定完成${plain}"
-		/usr/local/x-ui/x-ui setting -port "${config_port}"
+        if ! /usr/local/x-ui/x-ui setting -port "${config_port}"; then
+            echo "面板端口设置失败，已停止安装配置，请检查错误后重试。" >&2
+            return 1
+        fi
         echo -e "${yellow}面板端口设定完成${plain}"
     else
         echo -e "${red}已取消,所有设置项均为默认设置,请及时修改${plain}"
@@ -244,7 +288,7 @@ install_x-ui() {
     migrate_legacy_tun_dropin || exit 1
     install -o root -g root -m 0755 /usr/local/x-ui/x-ui.sh /usr/bin/x-ui || exit 1
     if [[ "${is_upgrade}" == "false" ]]; then
-        config_after_install
+        config_after_install || exit 1
     else
         echo -e "${green}现有面板配置已保留${plain}"
     fi

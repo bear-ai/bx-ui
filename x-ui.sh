@@ -153,7 +153,34 @@ uninstall() {
     fi
 }
 
+# Keep this helper in sync with install.sh. The binary owns the character/byte
+# policy so Unicode passwords are checked identically in every entry point.
+read_account_password() {
+    local validation_status
+    while true; do
+        if ! IFS= read -rsp "请输入新密码（至少 8 个字符，UTF-8 编码后最多 72 字节）: " config_password; then
+            echo >&2
+            config_password=
+            echo "输入已结束，已取消密码设置。" >&2
+            return 1
+        fi
+        echo >&2
+        if printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -validate-password -password-stdin; then
+            return 0
+        else
+            validation_status=$?
+        fi
+        config_password=
+        if [[ ${validation_status} -ne 1 ]]; then
+            echo "无法校验密码，请确认面板程序与安装脚本版本一致，已停止设置。" >&2
+            return 1
+        fi
+        echo "密码不符合要求，请重新输入。" >&2
+    done
+}
+
 reset_user() {
+    local config_account config_password
 	confirm "确定要重置面板用户名和密码吗" "n"
     if [[ $? != 0 ]]; then
         if [[ $# == 0 ]]; then
@@ -161,10 +188,17 @@ reset_user() {
         fi
         return 0
     fi
-	read -rp "请输入新用户名: " config_account
-	read -rsp "请输入至少 12 位的新密码: " config_password
-	echo
-	printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -username "${config_account}" -password-stdin || return 1
+    if ! read -rp "请输入新用户名: " config_account; then
+        echo "输入已结束，已取消账户配置。" >&2
+        return 1
+    fi
+    read_account_password || return 1
+    if ! printf '%s\n' "${config_password}" | /usr/local/x-ui/x-ui setting -username "${config_account}" -password-stdin; then
+        config_password=
+        echo "账户密码设置失败，未重启面板，请检查错误后重试。" >&2
+        return 1
+    fi
+    config_password=
 	echo -e "用户名和密码已安全重置，现在请重启面板"
     confirm_restart
 }

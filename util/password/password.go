@@ -52,8 +52,11 @@ func ValidateUsername(value string) error {
 
 func ValidatePassword(value string) error {
 	n := utf8.RuneCountInString(value)
-	if n < 12 || len([]byte(value)) > 72 {
-		return errors.New("密码至少需要 12 个字符，且 UTF-8 编码后不能超过 72 字节")
+	if n < 8 {
+		return errors.New("密码至少需要 8 个字符，请重新输入")
+	}
+	if len([]byte(value)) > 72 {
+		return errors.New("密码 UTF-8 编码后不能超过 72 字节，请重新输入")
 	}
 	return nil
 }

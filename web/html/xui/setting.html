@@ -87,7 +87,7 @@
                                 <a-form-item label="新用户名">
                                     <a-input v-model="user.newUsername" style="max-width: 300px"></a-input>
                                 </a-form-item>
-                                <a-form-item label="新密码">
+                                <a-form-item label="新密码" extra="至少 8 个字符，UTF-8 编码后不超过 72 字节">
                                     <a-input type="password" v-model="user.newPassword"
                                              style="max-width: 300px"></a-input>
                                 </a-form-item>

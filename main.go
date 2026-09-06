@@ -14,6 +14,7 @@ import (
 	"x-ui/config"
 	"x-ui/database"
 	"x-ui/logger"
+	passwordutil "x-ui/util/password"
 	"x-ui/v2ui"
 	"x-ui/web"
 	"x-ui/web/global"
@@ -189,11 +190,19 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid int, tgBotRuntime string)
 	}
 }
 
-func updateSetting(port int, username string, password string) {
+func updateSetting(port int, username string, password string) error {
+	// Reject invalid credentials before creating a database or changing a port.
+	if username != "" || password != "" {
+		if err := passwordutil.ValidateUsername(username); err != nil {
+			return err
+		}
+		if err := passwordutil.ValidatePassword(password); err != nil {
+			return err
+		}
+	}
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 
 	settingService := service.SettingService{}
@@ -201,20 +210,19 @@ func updateSetting(port int, username string, password string) {
 	if port > 0 {
 		err := settingService.SetPort(port)
 		if err != nil {
-			fmt.Println("set port failed:", err)
-		} else {
-			fmt.Printf("set port %v success", port)
+			return fmt.Errorf("set port failed: %w", err)
 		}
+		fmt.Printf("set port %v success\n", port)
 	}
 	if username != "" || password != "" {
 		userService := service.UserService{}
 		err := userService.UpdateFirstUser(username, password)
 		if err != nil {
-			fmt.Println("set username and password failed:", err)
-		} else {
-			fmt.Println("set username and password success")
+			return fmt.Errorf("set username and password failed: %w", err)
 		}
+		fmt.Println("set username and password success")
 	}
+	return nil
 }
 
 func main() {
@@ -237,6 +245,7 @@ func main() {
 	var username string
 	var password string
 	var passwordStdin bool
+	var validatePassword bool
 	var tgbottoken string
 	var tgbotchatid int
 	var enabletgbot bool
@@ -248,6 +257,7 @@ func main() {
 	settingCmd.IntVar(&port, "port", 0, "set panel port")
 	settingCmd.StringVar(&username, "username", "", "set login username")
 	settingCmd.BoolVar(&passwordStdin, "password-stdin", false, "read login password from stdin")
+	settingCmd.BoolVar(&validatePassword, "validate-password", false, "validate stdin password without changing settings (at least 8 characters, at most 72 UTF-8 bytes)")
 	settingCmd.StringVar(&tgbottoken, "tgbottoken", "", "set telegrame bot token")
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "set telegrame bot cron time")
 	settingCmd.IntVar(&tgbotchatid, "tgbotchatid", 0, "set telegrame bot chat id")
@@ -327,21 +337,35 @@ func main() {
 	case "setting":
 		err := settingCmd.Parse(os.Args[2:])
 		if err != nil {
-			fmt.Println(err)
-			return
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if validatePassword && !passwordStdin {
+			fmt.Fprintln(os.Stderr, "校验密码需要通过 -password-stdin 输入密码")
+			os.Exit(1)
 		}
 		if passwordStdin {
 			value, readErr := io.ReadAll(io.LimitReader(os.Stdin, 4096))
 			if readErr != nil {
-				fmt.Println("read password failed:", readErr)
-				return
+				fmt.Fprintln(os.Stderr, "read password failed:", readErr)
+				os.Exit(1)
 			}
 			password = strings.TrimRight(string(value), "\r\n")
+			if err := passwordutil.ValidatePassword(password); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+		if validatePassword {
+			return
 		}
 		if reset {
 			resetSetting()
 		} else {
-			updateSetting(port, username, password)
+			if err := updateSetting(port, username, password); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		}
 		if show {
 			showSetting(show)
